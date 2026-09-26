@@ -1,8 +1,8 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Ada 83 for Visual Studio Code</title>
+<title>TurboAda for Visual Studio Code</title>
 
-<script id="ada83-extension.js">
+<script id="turboada-extension.js">
 'use strict';
 
 const { spawn } = require('child_process');
@@ -45,7 +45,7 @@ const Parsed = (Body) => {
 };
 
 const Configured = (Name, Fallback) =>
-  vscode.workspace.getConfiguration ('ada83').get (Name, Fallback);
+  vscode.workspace.getConfiguration ('turboada').get (Name, Fallback);
 
 const Opened_Folders = () => vscode.workspace.workspaceFolders ?? [];
 
@@ -84,7 +84,7 @@ const Did_Open = (Document) => ({
   params: {
     textDocument: {
       uri: Document.uri.toString (),
-      languageId: 'ada83',
+      languageId: 'turboada',
       version: Document.version,
       text: Document.getText (),
     },
@@ -135,7 +135,7 @@ const Diagnostic_Of = (Reported) =>
   Object.assign (
     new vscode.Diagnostic (Range_Of (Reported.range), Reported.message,
                            Severity_Of (Reported.severity)),
-    { source: 'ada83',
+    { source: 'turboada',
       code: Reported.code,
       relatedInformation:
         (Reported.relatedInformation ?? []).map (Related_Of) });
@@ -164,7 +164,7 @@ const Publications_In = (Messages) =>
 const Answers_In = (Messages) => Messages.filter (Is_Answer);
 
 const Is_Ada_Document = (Document) =>
-  Document.languageId === 'ada83' && Document.uri.scheme === 'file';
+  Document.languageId === 'turboada' && Document.uri.scheme === 'file';
 
 let Session = null;
 let Next_Id = 10;
@@ -483,7 +483,7 @@ const Registrations = (Capabilities) =>
     .filter (({ Capability }) => Offered (Capabilities, Capability))
     .map ((Feature) => Feature.Register (Provider_For (Feature), Capabilities));
 
-const Manual_Name = 'ada83-manual.md';
+const Manual_Name = 'turboada-manual.md';
 const Manual_Results = 4;
 const Manual_Section_Words = 700;
 const Manual_Total_Words = 2400;
@@ -630,8 +630,8 @@ const Budgeted = (Sections) => {
 
 const Rendered = (Sections, Query) =>
   Sections.length === 0
-    ? `No section of the Ada 83 manual matches "${Query}".`
-    : ['Ada 83 Reference Manual (ANSI/MIL-STD-1815A), sections matching ' +
+    ? `No section of the TurboAda manual matches "${Query}".`
+    : ['TurboAda Language Manual, sections matching ' +
        `"${Query}":`,
        ...Budgeted (Sections).map (({ Clause, Title, Body }) =>
          `## ${Clause} ${Title}\n\n${Body}`)].join ('\n\n');
@@ -656,7 +656,7 @@ const Searched = (Root, Query) =>
     ? 'Ask for a clause number, such as 4.5.7, or for the wording to find.'
     : ((Index) =>
          Index === null
-           ? `The Ada 83 manual (${Manual_Name}) is not installed beside ` +
+           ? `The TurboAda manual (${Manual_Name}) is not installed beside ` +
              'the extension.'
            : Rendered (Ranked (Index, Query), Query.trim ()))
         (Manual_Index (Root));
@@ -671,7 +671,7 @@ const Manual_Tool = (Root) => ({
 const Manual_Registration = (Root) =>
   vscode.lm === undefined || vscode.lm.registerTool === undefined
     ? []
-    : [vscode.lm.registerTool ('search_ada83_manual', Manual_Tool (Root))];
+    : [vscode.lm.registerTool ('search_turboada_manual', Manual_Tool (Root))];
 
 const Style_Heading = '## Style Guidelines';
 
@@ -695,17 +695,45 @@ const Strengths = {
 const Strength_Of = () =>
   Strengths[Configured ('formatStrength', 'style')] ?? Strengths.style;
 
+const Admitted_Constructs =
+  ['protected types, timed and conditional calls to a protected entry,',
+   'controlled types (Ada.Finalization) without tagged types, child units,',
+   'general and anonymous access types, access discriminants,',
+   'access-to-subprogram types, modular types, if, case, quantified and',
+   'declare expressions, raise expressions, expression functions, null',
+   'procedures, the Pre, Post and Predicate aspects and pragma Assert, Pre',
+   'on an entry, user-defined literals, indexing and iteration, for ... of',
+   'loops, continue, raise ... with, delta aggregates, the <> box and',
+   'iterated component associations in aggregates, Ada.Exceptions, private',
+   'extensions, requeue, delay until, streams, Atomic and Volatile (Atomic',
+   'may name a protected type), defaults for generic formals, and a use',
+   'clause that stands for its with clause'].join (' ');
+
+const Absent_Constructs =
+  ['tagged types or anything that dispatches (no \'Class, abstract types,',
+   'interfaces or extension aggregates), no asynchronous select, no',
+   'access-to-protected-subprogram type, and no Ada.Containers,',
+   'Ada.Strings, Ada.Characters.Handling or Ada.Numerics'].join (' ');
+
+const Dialect_Rule = () =>
+  (Configured ('languageExtensions', true)
+     ? `The dialect is Ada 83 with what this compiler admits beyond it: ` +
+       `${Admitted_Constructs}. It has no ${Absent_Constructs}; never write ` +
+       'any of them.'
+     : 'The project is built with -ada83, so the dialect is Ada 83 ' +
+       '(ANSI/MIL-STD-1815A) alone: nothing from a later Ada.');
+
 const Reformat_Instruction = (Rules, Source) =>
-  ['Rewrite the Ada 83 source below so that it follows the style rules that',
+  ['Rewrite the Ada source below so that it follows the style rules that',
    'come after it.', Strength_Of (), 'Do not change what the program does:',
    'add and remove nothing, reorder nothing, and spell no name differently',
-   'except in its casing. Ada 83 only, so nothing from a later Ada. Answer',
-   'with the rewritten source alone, with no explanation and no code fence.',
+   'except in its casing.', Dialect_Rule (), 'Answer with the rewritten',
+   'source alone, with no explanation and no code fence.',
    '', 'The source:', '', Source, '', 'The rules:', '', Rules].join ('\n');
 
 const Unfenced = (Text) =>
   ((Match) => (Match === null ? Text : Match[1]))
-    (/^\s*```(?:ada|ada83)?\r?\n([\s\S]*?)\r?\n```\s*$/.exec (Text));
+    (/^\s*```(?:ada|turboada)?\r?\n([\s\S]*?)\r?\n```\s*$/.exec (Text));
 
 const Spoken = async (Model, Prompt, Token) => {
   const Reply = await Model.sendRequest (
@@ -720,12 +748,13 @@ let Scratch_Serial = 0;
 const Still_Compiles = (Source, Directory) =>
   new Promise ((Resolve) => {
     const Scratch = path.join (os.tmpdir (),
-                               `ada83-reformat-${process.pid}-` +
+                               `turboada-reformat-${process.pid}-` +
                                `${++Scratch_Serial}.ada`);
     try { fs.writeFileSync (Scratch, Source); }
     catch { return Resolve (false); }
     const [Command, Arguments, Options] =
-      Host_Escaped (Compiler_Path (), ['--analyse', Scratch, Directory],
+      Host_Escaped (Compiler_Path (),
+                    ['--analyse', ...Extension_Arguments (), Scratch, Directory],
                     Analysis_Environment ());
     const Child = spawn (Command, Arguments, Options);
     let Reply = '';
@@ -770,7 +799,7 @@ const Formatting_Provider = (Root) => ({
   provideDocumentFormattingEdits: (Document, Options, Token) =>
     Reformatted (Root, Document, Token).then (({ Source, Complaint }) =>
       (Source === undefined
-         ? (vscode.window.showWarningMessage (`Ada 83: ${Complaint}`), [])
+         ? (vscode.window.showWarningMessage (`TurboAda: ${Complaint}`), [])
          : [vscode.TextEdit.replace (Whole_Of (Document), Source)])),
 });
 
@@ -834,14 +863,14 @@ const Reformat_Registration = (Root) =>
     ? []
     : [vscode.languages.registerDocumentFormattingEditProvider (
          Ada_Selector, Formatting_Provider (Root)),
-       vscode.commands.registerCommand ('ada83.reformat', Reformat_Command),
+       vscode.commands.registerCommand ('turboada.reformat', Reformat_Command),
        vscode.workspace.onWillSaveTextDocument (Reformat_On_Save (Root))];
 
 const On_Type_Registration = () =>
   [vscode.languages.registerOnTypeFormattingEditProvider (
      Ada_Selector, On_Type_Provider, '\n', ';')];
 
-const Suggestion_Scheme = 'ada83-suggestion';
+const Suggestion_Scheme = 'turboada-suggestion';
 const Suggestion_Sources = new Map ();
 const Suggestion_Changes = new vscode.EventEmitter ();
 
@@ -862,10 +891,10 @@ const Complained_Of = (Diagnostics) =>
     .join ('\n');
 
 const Suggestion_Instruction = (Rules, Source, Complaints) =>
-  ['Repair the Ada 83 source below, which the compiler rejects with these',
+  ['Repair the Ada source below, which the compiler rejects with these',
    'errors:', '', Complaints, '',
-   'Fix what is reported and leave the rest of the file alone. Ada 83 only,',
-   'so nothing from a later Ada.',
+   'Fix what is reported and leave the rest of the file alone.',
+   Dialect_Rule (),
    'Prefer the shortest form that still says what it means: one expression',
    'rather than a sequence of statements, one subprogram rather than a',
    'passage written out twice, and no scaffolding that carries no meaning.',
@@ -916,7 +945,7 @@ const Approved = async (Document, Source) => {
     'vscode.diff', Document.uri, Uri,
     `${path.basename (Document.uri.fsPath)}: suggested fix`);
   const Chosen = await vscode.window.showInformationMessage (
-    'Ada 83: apply the suggested fix?', 'Apply', 'Discard');
+    'TurboAda: apply the suggested fix?', 'Apply', 'Discard');
   Suggestion_Sources.delete (Uri.toString ());
   return Chosen === 'Apply';
 };
@@ -941,15 +970,15 @@ const Suggest_Fix_Command = (Root) => async (Given, Reported) => {
   const Diagnostics = Reported ?? Errors_In (Document);
   if (Diagnostics.length === 0)
     return void vscode.window.showInformationMessage (
-      'Ada 83: no diagnostics in this file.');
+      'TurboAda: no diagnostics in this file.');
 
   const { Source, Complaint } = await vscode.window.withProgress (
     { location: vscode.ProgressLocation.Notification,
-      title: 'Ada 83: suggesting a fix', cancellable: true },
+      title: 'TurboAda: suggesting a fix', cancellable: true },
     (Ignored, Token) => Suggested (Root, Document, Diagnostics, Token));
 
   if (Source === undefined)
-    return void vscode.window.showWarningMessage (`Ada 83: ${Complaint}`);
+    return void vscode.window.showWarningMessage (`TurboAda: ${Complaint}`);
   if (await Approved (Document, Source)) await Applied (Document, Source);
 };
 
@@ -957,7 +986,7 @@ const Suggestion_Action = (Document, Diagnostics) =>
   Object.assign (
     new vscode.CodeAction ('Suggest Fix', vscode.CodeActionKind.QuickFix),
     { diagnostics: Diagnostics,
-      command: { command: 'ada83.suggestFix', title: 'Suggest Fix',
+      command: { command: 'turboada.suggestFix', title: 'Suggest Fix',
                  arguments: [Document, Diagnostics] } });
 
 const Suggestion_Provider = {
@@ -975,7 +1004,7 @@ const Suggestion_Registration = (Root) =>
        vscode.languages.registerCodeActionsProvider (
          Ada_Selector, Suggestion_Provider,
          { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }),
-       vscode.commands.registerCommand ('ada83.suggestFix',
+       vscode.commands.registerCommand ('turboada.suggestFix',
                                         Suggest_Fix_Command (Root))];
 
 const Languages = [
@@ -1014,7 +1043,7 @@ const Unmasked = (Skeleton, Kept) =>
 
 const Translation_Instruction = (In_Words, Skeletons) =>
   ['Translate each numbered line below into ' + In_Words + '.',
-   'They are diagnostics from a compiler for the Ada 83 language.',
+   'They are diagnostics from a compiler for Ada.',
    'A run like {0} or {3} stands for a piece of the programmer\'s own source',
    'that has been taken out. Reproduce every placeholder exactly as it is,',
    'once each and in the order it appears, and translate only the words',
@@ -1096,7 +1125,7 @@ const Publish = ({ Uri, Diagnostics }) => {
   Localised (Language, Uri, Diagnostics, Session).catch (() => { });
 };
 
-const Ada_Selector = { scheme: 'file', language: 'ada83' };
+const Ada_Selector = { scheme: 'file', language: 'turboada' };
 
 const Project_Suffixes = ['.gpr', '.gpj'];
 
@@ -1257,7 +1286,7 @@ const Complaint_Of = (Row, Column, Severity, Message) =>
       new vscode.Range (Number (Row) - 1, Number (Column) - 1,
                         Number (Row) - 1, Number.MAX_SAFE_INTEGER),
       Message, Project_Severity_Of (Severity)),
-    { source: 'ada83' });
+    { source: 'turboada' });
 
 const Complained_About = (Complaints, Text) => {
   const Found = new Map ();
@@ -1311,9 +1340,9 @@ const Show_Project = () => {
     : `${Project_Plan === null ? '$(error)' : '$(list-tree)'} ` +
       `${path.basename (Project)}${Scenario_Summary ()}`;
   Project_Item.command =
-    Project === null ? 'ada83.selectProject' : 'ada83.setScenario';
+    Project === null ? 'turboada.selectProject' : 'turboada.setScenario';
   Project_Item.tooltip = Project === null
-    ? 'Ada 83: the workspace root holds more than one project file, so ' +
+    ? 'TurboAda: the workspace root holds more than one project file, so ' +
       'none is active. Click to choose one.'
     : Project_Tooltip (Project);
   Project_Item.show ();
@@ -1322,7 +1351,7 @@ const Show_Project = () => {
 const Project_Refresh = async (Complaints) => {
   const Project = Active_Project ();
   Project_Plan = null;
-  vscode.commands.executeCommand ('setContext', 'ada83.hasProject',
+  vscode.commands.executeCommand ('setContext', 'turboada.hasProject',
                                   Project !== null);
   Complaints.clear ();
   if (Project !== null) {
@@ -1377,12 +1406,12 @@ const Task_Of = (Name, Title, Argument_List, Group, Extra) => {
   const [Command, Arguments] = Host_Escaped (Compiler_Path (), Argument_List);
   return Object.assign (
     new vscode.Task (
-      { type: 'ada83', task: Name, ...Extra },
+      { type: 'turboada', task: Name, ...Extra },
       vscode.TaskScope.Workspace,
       Title,
-      'ada83',
+      'turboada',
       new vscode.ShellExecution (Command, Arguments),
-      '$ada83'),
+      '$turboada'),
     { group: Group });
 };
 
@@ -1449,7 +1478,7 @@ const Run_On_The_Active_File = (Make) => () =>
   ((Source_Path) =>
      Source_Path === null
        ? vscode.window.showErrorMessage (
-           'Ada 83: open an Ada file before building or checking it.')
+           'TurboAda: open an Ada file before building or checking it.')
        : vscode.tasks.executeTask (Make (Source_Path)))
     (Active_Ada_Path ());
 
@@ -1459,7 +1488,7 @@ const Scenario_Target = () =>
     : vscode.ConfigurationTarget.Workspace;
 
 const Settled = (Name, Value) =>
-  vscode.workspace.getConfiguration ('ada83')
+  vscode.workspace.getConfiguration ('turboada')
     .update (Name, Value, Scenario_Target ());
 
 const Project_Item_Of = (Given) =>
@@ -1474,7 +1503,7 @@ const Select_Project = async () => {
       .map (({ fsPath }) => fsPath).sort ();
   if (Found.length === 0)
     return void vscode.window.showInformationMessage (
-      'Ada 83: no .gpr or .gpj in this workspace.');
+      'TurboAda: no .gpr or .gpj in this workspace.');
   const Chosen = await vscode.window.showQuickPick (
     Found.map (Project_Item_Of),
     { title: 'Select Project' });
@@ -1530,14 +1559,14 @@ const Picked_Value = async (Variable) =>
     (await vscode.window.showQuickPick (
        [...Variable.Values.map ((Value) => ({ label: Value })),
         ...(Scenario ()[Variable.Name] === undefined ? [] : [Unset_Value])],
-       { title: `Ada 83: ${Variable.Name}`,
+       { title: `TurboAda: ${Variable.Name}`,
          placeHolder: 'Select a value' }));
 
 const Written_Value = async (Variable) =>
   ((Given) =>
      (Given === undefined ? undefined : Given.trim () === '' ? null : Given))
     (await vscode.window.showInputBox (
-       { title: `Ada 83: ${Variable.Name}`,
+       { title: `TurboAda: ${Variable.Name}`,
          value: Scenario ()[Variable.Name] ?? Variable.Default ?? '',
          prompt: (Variable.Default === null
                     ? 'No default. '
@@ -1574,7 +1603,7 @@ const Set_Scenario = With_A_Project (async (Project) => {
                    : { ...Scenario (), [Variable.Name]: Value });
 });
 
-const Built_With = 'ada83.builtWith';
+const Built_With = 'turboada.builtWith';
 
 const Stamp_Of = () => JSON.stringify (Scenario ());
 
@@ -1582,7 +1611,7 @@ const Cleared_First = async (Memory, Clean) => {
   const Before = Memory.get (Built_With);
   if (Before === undefined || Before === Stamp_Of ()) return true;
   const Chosen = await vscode.window.showWarningMessage (
-    'Ada 83: the scenario changed since the last build; old objects ' +
+    'TurboAda: the scenario changed since the last build; old objects ' +
     'would be reused.',
     'Clean And Build', 'Build Anyway');
   if (Chosen === undefined) return false;
@@ -1600,7 +1629,7 @@ const Build_Main = (Memory, Clean) => With_A_Project (async (Project) => {
   const Mains = In_The_Root ('Main');
   if (Mains.length === 0)
     return void vscode.window.showInformationMessage (
-      'Ada 83: cannot build. The project declares no Main.');
+      'TurboAda: cannot build. The project declares no Main.');
   const Chosen = Mains.length === 1
     ? Mains[0]
     : await vscode.window.showQuickPick (
@@ -1639,14 +1668,14 @@ const Executables_In = (Directory) =>
 const Clean_Project = async () => {
   if (Project_Plan === null)
     return void vscode.window.showInformationMessage (
-      'Ada 83: cannot clean. No project has been read.');
+      'TurboAda: cannot clean. No project has been read.');
   const Objects = In_The_Root ('Object_Dir');
   const Executables = In_The_Root ('Exec_Dir');
   if (Objects.length === 0 && Executables.length === 0)
     return void vscode.window.showInformationMessage (
-      'Ada 83: cannot clean. The project sets no Object_Dir or Exec_Dir.');
+      'TurboAda: cannot clean. The project sets no Object_Dir or Exec_Dir.');
   const Chosen = await vscode.window.showWarningMessage (
-    `Ada 83: remove the compiler's own products from ` +
+    `TurboAda: remove the compiler's own products from ` +
     `${[...Objects, ...Executables].join (', ')}?`,
     { modal: true }, 'Remove');
   if (Chosen !== 'Remove') return;
@@ -1655,7 +1684,7 @@ const Clean_Project = async () => {
      ...Executables.flatMap (Executables_In)].reduce (
        (Total, Given) => Total + Removed (Given), 0);
   vscode.window.showInformationMessage (
-    `Ada 83: removed ${Gone} file${Gone === 1 ? '' : 's'}.`);
+    `TurboAda: removed ${Gone} file${Gone === 1 ? '' : 's'}.`);
 };
 
 const Substituted = (Setting) =>
@@ -1674,7 +1703,7 @@ const Pinned_Compiler = () =>
         (Indexed_In_The_Root ("IDE'Compiler_Command", 'ada')[0]);
 
 const Compiler_Path = () =>
-  Pinned_Compiler () ?? Substituted (Configured ('compilerPath', 'ada83'));
+  Pinned_Compiler () ?? Substituted (Configured ('compilerPath', 'turboada'));
 
 const Include_Paths = () =>
   [...new Set ([...Configured ('includePaths', []).map (Substituted),
@@ -1748,8 +1777,8 @@ const Start = (Diagnostics, Output, Status, Attempt) => {
       Show_State (Status, 'failed');
       Output.appendLine (`server unavailable: ${Reason}`);
       return vscode.window.showErrorMessage (
-        `Ada 83: '${Path} --lsp' failed (${Reason}). Check ` +
-        'ada83.compilerPath and ada83-runtime.ada.');
+        `TurboAda: '${Path} --lsp' failed (${Reason}). Check ` +
+        'turboada.compilerPath and turboada-runtime.ada.');
     }
     Show_State (Status, 'restarting');
     Output.appendLine (`server ${Reason}; restarting`);
@@ -1817,11 +1846,11 @@ const Settles_Down = (Notify) => (Event) =>
 
 const Touches_The_Server = (Change) =>
   ['enable', 'compilerPath', 'includePaths', 'languageExtensions']
-    .some ((Name) => Change.affectsConfiguration (`ada83.${Name}`));
+    .some ((Name) => Change.affectsConfiguration (`turboada.${Name}`));
 
 const Touches_The_Project = (Change) =>
   ['projectFile', 'scenario']
-    .some ((Name) => Change.affectsConfiguration (`ada83.${Name}`));
+    .some ((Name) => Change.affectsConfiguration (`turboada.${Name}`));
 
 const Watched_Projects = (Reload) =>
   ((Watcher) =>
@@ -1829,7 +1858,7 @@ const Watched_Projects = (Reload) =>
       Watcher.onDidDelete (Reload)])
     (vscode.workspace.createFileSystemWatcher ('**/*.{gpr,gpj}'));
 
-const Sidebar_View = 'ada83.projectView';
+const Sidebar_View = 'turboada.projectView';
 
 let Sidebar_Model = null;
 
@@ -1925,13 +1954,13 @@ const Sidebar_Project_Item = ({ Given, Root }) =>
         ? '' : vscode.workspace.asRelativePath (Given.file),
       tooltip: Given.file ?? Given.name,
       iconPath: new vscode.ThemeIcon (Root ? 'project' : 'link'),
-      contextValue: 'ada83Project' });
+      contextValue: 'turboadaProject' });
 
 const Sidebar_Main_Item = ({ Main }) =>
   Object.assign (new vscode.TreeItem (Main, Sidebar_Leaf),
     { description: 'main',
       iconPath: new vscode.ThemeIcon ('symbol-method'),
-      contextValue: 'ada83Main' });
+      contextValue: 'turboadaMain' });
 
 const Sidebar_Attribute_Item = ({ Row }) =>
   Row.values.length > 1
@@ -1956,8 +1985,8 @@ const Sidebar_Variable_Item = ({ Variable }) =>
       tooltip: Detail_Of (Variable),
       iconPath: new vscode.ThemeIcon (
         Variable.Values.length > 0 ? 'symbol-enum' : 'symbol-variable'),
-      contextValue: 'ada83Variable',
-      command: { command: 'ada83.setScenarioVariable',
+      contextValue: 'turboadaVariable',
+      command: { command: 'turboada.setScenarioVariable',
                  title: 'Set Variable',
                  arguments: [Variable] } });
 
@@ -1970,7 +1999,7 @@ const Sidebar_Language_Item = ({ Language, Sources }) =>
     new vscode.TreeItem (Language, vscode.TreeItemCollapsibleState.Collapsed),
     { description: `${Sources.length} source${Sources.length === 1 ? '' : 's'}`,
       iconPath: new vscode.ThemeIcon ('symbol-namespace'),
-      contextValue: 'ada83Language' });
+      contextValue: 'turboadaLanguage' });
 
 const Sidebar_Source_Item = ({ Path, Tag }) =>
   Object.assign (new vscode.TreeItem (Path, Sidebar_Leaf),
@@ -2068,7 +2097,7 @@ const Progress_Line = /^PROGRESS (\d+) (\d+) (\S+) (.*)$/;
 const Progress_Build = (Project, Mains, Output, Debug) =>
   vscode.window.withProgress (
     { location: vscode.ProgressLocation.Notification,
-      title: 'Ada 83: building', cancellable: true },
+      title: 'TurboAda: building', cancellable: true },
     (Progress, Token) => new Promise ((Resolve) => {
       const [Command, Given, Options] = Host_Escaped (
         Compiler_Path (),
@@ -2107,13 +2136,13 @@ const Progress_Build = (Project, Mains, Output, Debug) =>
 const Told_The_Outcome = ({ Code, Compiled }, Output) =>
   Code !== 0
     ? vscode.window.showWarningMessage (
-        'Ada 83: the build failed. See the Ada 83 output.', 'Show Output')
+        'TurboAda: the build failed. See the Ada 83 output.', 'Show Output')
         .then ((Chosen) => { if (Chosen === 'Show Output') Output.show (true); })
     : Compiled === 0
       ? vscode.window.showInformationMessage (
-          'Ada 83: up to date.')
+          'TurboAda: up to date.')
       : vscode.window.showInformationMessage (
-          `Ada 83: built — ${Compiled} unit${Compiled === 1 ? '' : 's'} ` +
+          `TurboAda: built — ${Compiled} unit${Compiled === 1 ? '' : 's'} ` +
           'compiled.');
 
 const Sidebar_Build = (Memory, Clean, Output) => async (Element, Debug) => {
@@ -2153,10 +2182,10 @@ const Sidebar_Run = (Memory, Clean, Output) => async (Element) => {
   const Executable = Sidebar_Executable (Element.Given, Element.Main);
   if (Executable === null)
     return void vscode.window.showInformationMessage (
-      'Ada 83: cannot run. The project names no Exec_Dir.');
+      'TurboAda: cannot run. The project names no Exec_Dir.');
   const [Command, Arguments] = Host_Escaped (Executable, []);
   const Terminal = vscode.window.createTerminal (
-    { name: `Ada 83: ${path.basename (Executable)}` });
+    { name: `TurboAda: ${path.basename (Executable)}` });
   Terminal.show ();
   Terminal.sendText (
     [Command, ...Arguments].map ((Word) => JSON.stringify (Word)).join (' '));
@@ -2164,12 +2193,12 @@ const Sidebar_Run = (Memory, Clean, Output) => async (Element) => {
 
 const Sidebar_Registration = (Memory, Output, Refreshed) =>
   [vscode.window.registerTreeDataProvider (Sidebar_View, Sidebar_Provider),
-   vscode.commands.registerCommand ('ada83.refreshProjectView', Refreshed),
-   vscode.commands.registerCommand ('ada83.setScenarioVariable',
+   vscode.commands.registerCommand ('turboada.refreshProjectView', Refreshed),
+   vscode.commands.registerCommand ('turboada.setScenarioVariable',
                                     Sidebar_Set_Variable),
-   vscode.commands.registerCommand ('ada83.buildMainWithProgress',
+   vscode.commands.registerCommand ('turboada.buildMainWithProgress',
      Sidebar_Build (Memory, Clean_Project, Output)),
-   vscode.commands.registerCommand ('ada83.runMain',
+   vscode.commands.registerCommand ('turboada.runMain',
      Sidebar_Run (Memory, Clean_Project, Output))];
 
 const http = require ('http');
@@ -2205,14 +2234,14 @@ const Setting_Written = () =>
      [Inspected.globalValue, Inspected.workspaceValue,
       Inspected.workspaceFolderValue]
        .some ((Value) => Value !== undefined))
-    (vscode.workspace.getConfiguration ('ada83').inspect ('compilerPath'));
+    (vscode.workspace.getConfiguration ('turboada').inspect ('compilerPath'));
 
 const Workspace_Compiler = () =>
   ((Folder) =>
      Folder === null
        ? null
        : path.join (Folder.uri.fsPath, Platform_Folder,
-                    'ada83' + Executable_Suffix))
+                    'turboada' + Executable_Suffix))
     (Opened_Folder ());
 
 let Known_Compiler = { Path: null, Version: null };
@@ -2221,9 +2250,9 @@ let Compiler_Item = null;
 const Show_Compiler = () => {
   if (Compiler_Item === null) return;
   if (Known_Compiler.Version === null) {
-    Compiler_Item.text = '$(warning) ada83: not found';
+    Compiler_Item.text = '$(warning) TurboAda: no compiler';
     Compiler_Item.tooltip =
-      'No ada83 compiler answers --version. Click to download or locate one.';
+      'Nothing here answers --version. Click to fetch a compiler, or point us at one.';
   } else {
     Compiler_Item.text =
       `$(tools) ${Known_Compiler.Version.split (' -- ')[0]}`;
@@ -2247,21 +2276,21 @@ const Adopted = async (Context, Executable, Version, Target) => {
   Terminals_Told (Context, Executable);
   Show_Compiler ();
   if (Target !== undefined &&
-      Substituted (Configured ('compilerPath', 'ada83')) !== Executable)
-    await vscode.workspace.getConfiguration ('ada83')
+      Substituted (Configured ('compilerPath', 'turboada')) !== Executable)
+    await vscode.workspace.getConfiguration ('turboada')
       .update ('compilerPath', Executable, Target);
 };
 
 const Default_Download_Base =
-  'https://raw.githubusercontent.com/AdaDoom3/Ada83/main';
+  'https://raw.githubusercontent.com/AdaDoom3/TurboAda/main';
 
 const Download_Base = () =>
   Configured ('downloadBase', Default_Download_Base).replace (/\/+$/, '');
 
 const Fetched_Names = () =>
   process.platform === 'win32'
-    ? [`${Platform_Folder}/ada83.exe`, 'ada83-runtime.ada', 'bin-libraries.zip']
-    : [`${Platform_Folder}/ada83`, 'ada83-runtime.ada'];
+    ? [`${Platform_Folder}/turboada.exe`, 'turboada-runtime.ada', 'bin-libraries.zip']
+    : [`${Platform_Folder}/ta`, 'turboada-runtime.ada'];
 
 const Got = (Address, Redirects) =>
   new Promise ((Resolve, Reject) => {
@@ -2346,14 +2375,14 @@ const Downloaded_Compiler = async (Context) => {
       else
         fs.writeFileSync (path.join (Staging, path.basename (Name)), Data);
     }
-    fs.chmodSync (path.join (Staging, 'ada83' + Executable_Suffix), 0o755);
+    fs.chmodSync (path.join (Staging, 'turboada' + Executable_Suffix), 0o755);
     const Version =
-      await Version_Of (path.join (Staging, 'ada83' + Executable_Suffix));
+      await Version_Of (path.join (Staging, 'turboada' + Executable_Suffix));
     if (Version === null)
       throw new Error ('the downloaded compiler does not answer --version');
     fs.rmSync (Home, { recursive: true, force: true });
     fs.renameSync (Staging, Home);
-    return { Executable: path.join (Home, 'ada83' + Executable_Suffix),
+    return { Executable: path.join (Home, 'turboada' + Executable_Suffix),
              Version };
   } catch (Reason) {
     fs.rmSync (Staging, { recursive: true, force: true });
@@ -2364,30 +2393,30 @@ const Downloaded_Compiler = async (Context) => {
 const Fetch_Compiler = (Context) =>
   vscode.window.withProgress (
     { location: vscode.ProgressLocation.Notification,
-      title: 'Ada 83: downloading the compiler' },
+      title: 'TurboAda: downloading the compiler' },
     () => Downloaded_Compiler (Context))
   .then (async ({ Executable, Version }) => {
     await Adopted (Context, Executable, Version,
                    vscode.ConfigurationTarget.Global);
     vscode.window.showInformationMessage (
-      `Ada 83: installed ${Version}.`);
+      `TurboAda: installed ${Version}.`);
   })
   .catch ((Reason) =>
     vscode.window.showErrorMessage (
-      `Ada 83: download failed (${Reason.message}). Set ` +
-      'ada83.downloadBase, or locate a compiler.'));
+      `TurboAda: download failed (${Reason.message}). Set ` +
+      'turboada.downloadBase, or locate a compiler.'));
 
 const Locate_Compiler = async (Context) => {
   const Chosen = await vscode.window.showOpenDialog (
     { canSelectMany: false, openLabel: 'Select Compiler',
-      title: 'Locate ada83' });
+      title: 'Locate the compiler' });
   if (Chosen === undefined || Chosen.length === 0) return;
   const Executable = Chosen[0].fsPath;
   const Version = await Version_Of (Executable);
   if (Version === null)
     return void vscode.window.showErrorMessage (
-      `Ada 83: '${Executable}' does not answer --version, so it was not ` +
-      'taken. Remember the compiler needs ada83-runtime.ada beside it ' +
+      `TurboAda: '${Executable}' does not answer --version, so it was not ` +
+      'taken. Remember the compiler needs turboada-runtime.ada beside it ' +
       'to compile anything.');
   await Adopted (Context, Executable, Version,
                  vscode.ConfigurationTarget.Global);
@@ -2395,7 +2424,7 @@ const Locate_Compiler = async (Context) => {
 
 const Offer_Compiler = (Context) =>
   vscode.window.showInformationMessage (
-    'Ada 83: no compiler found in ada83.compilerPath, the workspace, ' +
+    'TurboAda: no compiler found in turboada.compilerPath, the workspace, ' +
     'or PATH. Language features need one.',
     'Download', 'Locate…', 'Not Now')
   .then ((Chosen) =>
@@ -2415,9 +2444,9 @@ const Compiler_Settled = async (Context) => {
     if (Version !== null)
       return Adopted (Context, Local, Version, Scenario_Target ());
   }
-  const On_Path = await Version_Of ('ada83' + Executable_Suffix);
+  const On_Path = await Version_Of ('turboada' + Executable_Suffix);
   if (On_Path !== null)
-    return Adopted (Context, 'ada83' + Executable_Suffix, On_Path);
+    return Adopted (Context, 'turboada' + Executable_Suffix, On_Path);
   Known_Compiler = { Path: null, Version: null };
   Terminals_Told (Context, null);
   Show_Compiler ();
@@ -2426,11 +2455,11 @@ const Compiler_Settled = async (Context) => {
 
 const Compiler_Choices = (Context) => [
   { label: '$(cloud-download) Download the released compiler',
-    detail: 'Fetched from ada83.downloadBase into the extension\'s own ' +
+    detail: 'Fetched from turboada.downloadBase into the extension\'s own ' +
             'storage, the runtime beside it.',
     Act: () => Fetch_Compiler (Context) },
   { label: '$(folder-opened) Locate a compiler…',
-    detail: 'Point at an ada83 executable you already have.',
+    detail: 'Point at a compiler you already have.',
     Act: () => Locate_Compiler (Context) },
   { label: '$(sync) Look again',
     detail: 'The setting, then bin-<platform> under the workspace, then ' +
@@ -2449,7 +2478,7 @@ const Choose_Compiler = (Context) => async () => {
 };
 
 const Reshown_Compiler = (Context) => (Change) => {
-  if (!Change.affectsConfiguration ('ada83.compilerPath')) return;
+  if (!Change.affectsConfiguration ('turboada.compilerPath')) return;
   const Named = Compiler_Path ();
   Version_Of (Named).then ((Version) => {
     Known_Compiler = { Path: Version === null ? null : Named, Version };
@@ -2461,12 +2490,12 @@ const Reshown_Compiler = (Context) => (Change) => {
 const Bootstrap_Registration = (Context) => {
   Compiler_Item = vscode.window.createStatusBarItem (
     vscode.StatusBarAlignment.Right, 98);
-  Compiler_Item.command = 'ada83.chooseCompiler';
+  Compiler_Item.command = 'turboada.chooseCompiler';
   return [
     Compiler_Item,
-    vscode.commands.registerCommand ('ada83.updateCompiler',
+    vscode.commands.registerCommand ('turboada.updateCompiler',
                                      () => Fetch_Compiler (Context)),
-    vscode.commands.registerCommand ('ada83.chooseCompiler',
+    vscode.commands.registerCommand ('turboada.chooseCompiler',
                                      Choose_Compiler (Context)),
     vscode.workspace.onDidChangeConfiguration (Reshown_Compiler (Context)),
   ];
@@ -2475,8 +2504,8 @@ const Bootstrap_Registration = (Context) => {
 const Ada_Identifier = /^[A-Za-z](_?[A-Za-z0-9])*$/;
 
 const Scaffold_Project = (Name, Kind) => [
-  `--  Written by Ada 83: New Project.  Build it with`,
-  `--    ada83 -P ${Name.toLowerCase ()}.gpr [-X BUILD=release]`,
+  `--  Written by TurboAda: New Project.  Build it with`,
+  `--    ta -P ${Name.toLowerCase ()}.gpr [-X BUILD=release]`,
   `project ${Name} is`,
   `  type Build_Kind is ("debug", "release");`,
   `  Build : Build_Kind := external ("BUILD", "debug");`,
@@ -2571,8 +2600,8 @@ const New_Project = (Context) => async () => {
       Start = vscode.Uri.file (path.join (Parent, '.gpr'));
       await vscode.window.showErrorMessage (
         Name === ''
-          ? 'Ada 83: the project needs a name before the .gpr.'
-          : `Ada 83: '${Name}' is not an Ada identifier, so it cannot ` +
+          ? 'TurboAda: the project needs a name before the .gpr.'
+          : `TurboAda: '${Name}' is not an Ada identifier, so it cannot ` +
             'name a project.',
         { modal: true });
     }
@@ -2589,7 +2618,7 @@ const New_Project = (Context) => async () => {
   try {
     await vscode.workspace.fs.stat (Root);
     return void vscode.window.showErrorMessage (
-      `Ada 83: '${Root.fsPath}' already exists.`);
+      `TurboAda: '${Root.fsPath}' already exists.`);
   } catch {}
 
   const First = Kind === 'application' ? Under ('src', 'main.adb')
@@ -2609,7 +2638,7 @@ const New_Project = (Context) => async () => {
     if (!await vscode.workspace.applyEdit (Written)) throw new Error ();
   } catch ({ message }) {
     return void vscode.window.showErrorMessage (
-      `Ada 83: the project could not be written` +
+      `TurboAda: the project could not be written` +
       `${message ? ` (${message})` : ''}.`);
   }
 
@@ -2624,11 +2653,11 @@ const New_Project = (Context) => async () => {
 };
 
 const Scaffold_Registration = (Context) =>
-  [vscode.commands.registerCommand ('ada83.newProject',
+  [vscode.commands.registerCommand ('turboada.newProject',
                                     New_Project (Context))];
 
-const Debug_Type = 'ada83';
-const Debug_Prebuilt = 'ada83Prebuilt';
+const Debug_Type = 'turboada';
+const Debug_Prebuilt = 'turboadaPrebuilt';
 const Debug_Flag = /(^|\s)--dap\b/;
 
 const Usage_Of = (Command) =>
@@ -2679,9 +2708,9 @@ const Debug_Adapter_Factory = {
       Pinned_Compiler () ?? Known_Compiler.Path ?? Compiler_Path ();
     if (!await Speaks_Dap (Compiler))
       throw new Error (
-        `Ada 83: '${Compiler}' does not know --dap, the mode where the ` +
-        'compiler itself is the debug adapter. Run Ada 83: Download Or ' +
-        'Update The Compiler, or point ada83.debugAdapterPath at a DAP ' +
+        `TurboAda: '${Compiler}' does not know --dap, the mode where the ` +
+        'compiler itself is the debug adapter. Run TurboAda: Download Or ' +
+        'Update The Compiler, or point turboada.debugAdapterPath at a DAP ' +
         'executable.');
     return Adapter_Executable (Compiler, ['--dap']);
   },
@@ -2698,7 +2727,7 @@ const Debug_Mains = () =>
 const Debug_Configuration = (Element, Executable) => ({
   type: Debug_Type,
   request: 'launch',
-  name: `Ada 83: ${Element.Main}`,
+  name: `TurboAda: ${Element.Main}`,
   program: Executable,
 });
 
@@ -2710,7 +2739,7 @@ const Debug_Built = (Memory, Output) => async (Element) => {
   const Executable = Sidebar_Executable (Element.Given, Element.Main);
   if (Executable !== null) return Debug_Configuration (Element, Executable);
   vscode.window.showInformationMessage (
-    'Ada 83: cannot debug. The project names no Exec_Dir.');
+    'TurboAda: cannot debug. The project names no Exec_Dir.');
   return null;
 };
 
@@ -2725,7 +2754,7 @@ const Debug_Main = (Memory, Output) => async (Given) => {
   const Mains = Debug_Mains ();
   if (Given?.Main === undefined && Mains.length === 0)
     return void vscode.window.showInformationMessage (
-      'Ada 83: cannot debug. The project declares no Main.');
+      'TurboAda: cannot debug. The project declares no Main.');
   const Element = Given?.Main !== undefined ? Given
                 : Mains.length === 1 ? Mains[0]
                 : await Debug_Chosen (Mains);
@@ -2745,7 +2774,7 @@ const Debug_Initial = () =>
   ((Executable) => ({
      type: Debug_Type,
      request: 'launch',
-     name: 'Ada 83: debug the main',
+     name: 'TurboAda: debug the main',
      program: Executable === null
        ? '${workspaceFolder}/main'
        : ((Relative) =>
@@ -2777,7 +2806,7 @@ const Debug_Provider = (Memory, Output) => ({
     if (Element !== undefined)
       return (await Debug_Built (Memory, Output) (Element)) ?? undefined;
     vscode.window.showInformationMessage (
-      'Ada 83: no active project declares a Main to fill a debug ' +
+      'TurboAda: no active project declares a Main to fill a debug ' +
       'configuration from; write one in launch.json.');
     return undefined;
   },
@@ -2788,12 +2817,12 @@ const Debug_Registration = (Memory, Output) =>
      Debug_Type, Debug_Adapter_Factory),
    vscode.debug.registerDebugConfigurationProvider (
      Debug_Type, Debug_Provider (Memory, Output)),
-   vscode.commands.registerCommand ('ada83.debugMain',
+   vscode.commands.registerCommand ('turboada.debugMain',
      Debug_Main (Memory, Output)),
-   vscode.commands.registerCommand ('ada83.debugMainWithProgress',
+   vscode.commands.registerCommand ('turboada.debugMainWithProgress',
      Debug_Main (Memory, Output))];
 
-const Ada_Tasks_View = 'ada83.tasksView';
+const Ada_Tasks_View = 'turboada.tasksView';
 
 let Ada_Tasks = [];
 
@@ -2810,7 +2839,7 @@ const Ada_Tasks_Shown = (Tasks) => {
 };
 
 const Ada_Tasks_Refreshed = (Session) =>
-  Promise.resolve (Session.customRequest ('ada83/tasks'))
+  Promise.resolve (Session.customRequest ('turboada/tasks'))
     .then (Ada_Task_Rows_Of)
     .catch (() => [])
     .then (Ada_Tasks_Shown);
@@ -2845,7 +2874,7 @@ const Ada_Tasks_Provider = {
 
 const Ada_Tasks_Session = (Session) => {
   const Debugging = Session !== undefined && Session.type === Debug_Type;
-  vscode.commands.executeCommand ('setContext', 'ada83.debugging',
+  vscode.commands.executeCommand ('setContext', 'turboada.debugging',
                                   Debugging);
   if (Debugging) Ada_Tasks_Refreshed (Session);
   else Ada_Tasks_Shown ([]);
@@ -2870,14 +2899,14 @@ const Ada_Tasks_Registration = () => {
 };
 
 const activate = (Context) => {
-  vscode.commands.executeCommand ('setContext', 'ada83.relevant', true);
+  vscode.commands.executeCommand ('setContext', 'turboada.relevant', true);
   const Output = vscode.window.createOutputChannel ('Ada 83');
-  const Diagnostics = vscode.languages.createDiagnosticCollection ('ada83');
+  const Diagnostics = vscode.languages.createDiagnosticCollection ('turboada');
   const Complaints =
-    vscode.languages.createDiagnosticCollection ('ada83-project');
+    vscode.languages.createDiagnosticCollection ('turboada-project');
   const Status = vscode.window.createStatusBarItem (
     vscode.StatusBarAlignment.Right, 100);
-  Status.command = 'ada83.showOutput';
+  Status.command = 'turboada.showOutput';
   Project_Item = vscode.window.createStatusBarItem (
     vscode.StatusBarAlignment.Right, 99);
   Trace_Channel = Output;
@@ -2923,26 +2952,26 @@ const activate = (Context) => {
     }),
     Watched_Folders (Reload_Soon),
     ...Watched_Projects (Reload_Soon),
-    vscode.commands.registerCommand ('ada83.build',
+    vscode.commands.registerCommand ('turboada.build',
                                      Run_On_The_Active_File (Build_Task)),
-    vscode.commands.registerCommand ('ada83.check',
+    vscode.commands.registerCommand ('turboada.check',
                                      Run_On_The_Active_File (Check_Task)),
-    vscode.commands.registerCommand ('ada83.selectProject', Select_Project),
-    vscode.commands.registerCommand ('ada83.setScenario', Set_Scenario),
+    vscode.commands.registerCommand ('turboada.selectProject', Select_Project),
+    vscode.commands.registerCommand ('turboada.setScenario', Set_Scenario),
     vscode.commands.registerCommand (
-      'ada83.buildProject',
+      'turboada.buildProject',
       Build_Project (Context.workspaceState, Clean_Project)),
     vscode.commands.registerCommand (
-      'ada83.buildMain',
+      'turboada.buildMain',
       Build_Main (Context.workspaceState, Clean_Project)),
-    vscode.commands.registerCommand ('ada83.showPlan', Show_Plan),
-    vscode.commands.registerCommand ('ada83.cleanProject', Clean_Project),
-    vscode.commands.registerCommand ('ada83.restartServer',
+    vscode.commands.registerCommand ('turboada.showPlan', Show_Plan),
+    vscode.commands.registerCommand ('turboada.cleanProject', Clean_Project),
+    vscode.commands.registerCommand ('turboada.restartServer',
                                      () => Restart (Diagnostics, Output,
                                                     Status)),
-    vscode.commands.registerCommand ('ada83.showOutput',
+    vscode.commands.registerCommand ('turboada.showOutput',
                                      () => Output.show (true)),
-    vscode.tasks.registerTaskProvider ('ada83', Task_Provider),
+    vscode.tasks.registerTaskProvider ('turboada', Task_Provider),
     ...Sidebar_Registration (Context.workspaceState, Output,
                              Read_The_Project),
     ...Debug_Registration (Context.workspaceState, Output),
@@ -2963,24 +2992,24 @@ module.exports = { activate, deactivate };
 
 <script id="package.json" type="application/json">
 {
-  "name": "ada83",
-  "displayName": "Ada 83",
-  "description": "Ada 83 (ANSI/MIL-STD-1815A) language support, powered by the ada83 compiler.",
-  "version": "1.0.0",
-  "publisher": "ada83",
+  "name": "turboada",
+  "displayName": "TurboAda",
+  "description": "An Ada compiler and a place to work in it. Native code through LLVM, and every answer in the editor comes from the compiler itself.",
+  "version": "1.1.0",
+  "publisher": "turboada",
   "license": "SEE LICENSE IN ../readme.md",
   "repository": {
     "type": "git",
-    "url": "https://github.com/AdaDoom3/Ada83.git"
+    "url": "https://github.com/AdaDoom3/TurboAda.git"
   },
-  "homepage": "https://github.com/AdaDoom3/Ada83#readme",
+  "homepage": "https://github.com/AdaDoom3/TurboAda#readme",
   "bugs": {
-    "url": "https://github.com/AdaDoom3/Ada83/issues"
+    "url": "https://github.com/AdaDoom3/TurboAda/issues"
   },
   "qna": false,
   "keywords": [
     "ada",
-    "ada83",
+    "turboada",
     "MIL-STD-1815A",
     "compiler",
     "llvm"
@@ -3000,9 +3029,9 @@ module.exports = { activate, deactivate };
     "Debuggers"
   ],
   "activationEvents": [
-    "onLanguage:ada83",
-    "onLanguageModelTool:search_ada83_manual",
-    "onDebugResolve:ada83",
+    "onLanguage:turboada",
+    "onLanguageModelTool:search_turboada_manual",
+    "onDebugResolve:turboada",
     "onDebugInitialConfigurations",
     "workspaceContains:**/*.ada",
     "workspaceContains:**/*.adb",
@@ -3010,51 +3039,51 @@ module.exports = { activate, deactivate };
     "workspaceContains:**/*.gpr",
     "workspaceContains:**/*.gpj"
   ],
-  "icon": "ada83-icon.png",
-  "main": "./ada83-extension.js",
+  "icon": "turboada-icon.png",
+  "main": "./turboada-extension.js",
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "ada83",
+          "id": "turboada",
           "title": "Ada 83",
-          "icon": "./ada83-icon-activity.svg"
+          "icon": "./turboada-icon-activity.svg"
         }
       ]
     },
     "views": {
-      "ada83": [
+      "turboada": [
         {
-          "id": "ada83.projectView",
+          "id": "turboada.projectView",
           "name": "Project",
           "contextualTitle": "Ada 83",
-          "icon": "./ada83-icon-activity.svg",
-          "when": "ada83.relevant"
+          "icon": "./turboada-icon-activity.svg",
+          "when": "turboada.relevant"
         }
       ],
       "debug": [
         {
-          "id": "ada83.tasksView",
+          "id": "turboada.tasksView",
           "name": "Tasks",
           "contextualTitle": "Ada 83",
-          "icon": "./ada83-icon-activity.svg",
-          "when": "ada83.debugging"
+          "icon": "./turboada-icon-activity.svg",
+          "when": "turboada.debugging"
         }
       ]
     },
     "viewsWelcome": [
       {
-        "view": "ada83.projectView",
-        "contents": "No project selected. Choose the .gpr or .gpj to build and analyse with.\n[Select Project](command:ada83.selectProject)"
+        "view": "turboada.projectView",
+        "contents": "No project selected. Choose the .gpr or .gpj to build and analyse with.\n[Select Project](command:turboada.selectProject)"
       },
       {
         "view": "explorer",
-        "contents": "Create a new Ada project.\n[New Ada Project](command:ada83.newProject)",
+        "contents": "Create a new Ada project.\n[New Ada Project](command:turboada.newProject)",
         "when": "workspaceFolderCount == 0"
       }
     ],
     "configurationDefaults": {
-      "[ada83]": {
+      "[turboada]": {
         "editor.tabSize": 2,
         "editor.insertSpaces": true
       },
@@ -3065,7 +3094,7 @@ module.exports = { activate, deactivate };
     },
     "languages": [
       {
-        "id": "ada83",
+        "id": "turboada",
         "aliases": [
           "Ada",
           "ada"
@@ -3076,8 +3105,8 @@ module.exports = { activate, deactivate };
           ".ads"
         ],
         "icon": {
-          "light": "./ada83-icon-source.svg",
-          "dark": "./ada83-icon-source.svg"
+          "light": "./turboada-icon-source.svg",
+          "dark": "./turboada-icon-source.svg"
         },
         "configuration": "./language-configuration.json"
       },
@@ -3091,8 +3120,8 @@ module.exports = { activate, deactivate };
           ".gpr"
         ],
         "icon": {
-          "light": "./ada83-icon.png",
-          "dark": "./ada83-icon.png"
+          "light": "./turboada-icon.png",
+          "dark": "./turboada-icon.png"
         },
         "configuration": "./language-configuration-gpr.json"
       },
@@ -3107,17 +3136,17 @@ module.exports = { activate, deactivate };
         ],
         "firstLine": "^#!gbuild",
         "icon": {
-          "light": "./ada83-icon.png",
-          "dark": "./ada83-icon.png"
+          "light": "./turboada-icon.png",
+          "dark": "./turboada-icon.png"
         },
         "configuration": "./language-configuration-gpj.json"
       }
     ],
     "grammars": [
       {
-        "language": "ada83",
+        "language": "turboada",
         "scopeName": "source.ada",
-        "path": "./syntaxes/ada83.tmLanguage.json"
+        "path": "./syntaxes/turboada.tmLanguage.json"
       },
       {
         "language": "gpr",
@@ -3132,89 +3161,89 @@ module.exports = { activate, deactivate };
     ],
     "iconThemes": [
       {
-        "id": "ada83",
+        "id": "turboada",
         "label": "Ada 83 File Icons (minimal)",
-        "path": "./ada83-file-icons.json"
+        "path": "./turboada-file-icons.json"
       }
     ],
     "snippets": [
       {
-        "language": "ada83",
+        "language": "turboada",
         "path": "./snippets.json"
       }
     ],
     "configuration": {
       "title": "Ada 83",
       "properties": {
-        "ada83.compilerPath": {
+        "turboada.compilerPath": {
           "type": "string",
-          "default": "ada83",
-          "description": "Path to the ada83 compiler: set, it always wins; unset, a project naming IDE'Compiler_Command (\"ada\") pins the compiler the project is built and analysed with. It is run as `ada83 --lsp`, and looks for ada83-runtime.ada beside itself. Left unset with no project pinning one, the extension looks in bin-<platform>/ under the workspace, then on PATH, and failing both offers to download a build; whatever is adopted is written back here."
+          "default": "turboada",
+          "description": "Where the compiler is. Leave it empty and we will go and find one. Keep turboada-runtime.ada beside it."
         },
-        "ada83.downloadBase": {
+        "turboada.downloadBase": {
           "type": "string",
-          "default": "https://raw.githubusercontent.com/AdaDoom3/Ada83/main",
-          "description": "Where Ada 83: Download Or Update The Compiler fetches from. It appends bin-<platform>/ada83, ada83-runtime.ada and, on Windows, bin-libraries.zip, so a mirror only reproduces those paths under its own base. http(s) and file URLs are read."
+          "default": "https://raw.githubusercontent.com/AdaDoom3/TurboAda/main",
+          "description": "Where to fetch the compiler from. Your own mirror, if you keep one."
         },
-        "ada83.debugAdapterPath": {
+        "turboada.debugAdapterPath": {
           "type": "string",
           "default": "",
-          "description": "A Debug Adapter Protocol executable to run in place of the compiler's own adapter, verbatim and with no arguments — raw lldb-dap, say, for the untranslated view. Left empty, a project naming IDE'Debugger_Command runs that command line, quotes honored; otherwise debugging runs the resolved compiler as `ada83 --dap`, which drives lldb-dap underneath and does the Ada spelling itself. ${workspaceFolder} is substituted."
+          "description": "Another debug adapter, should you prefer your own. Empty means ours, which speaks Ada."
         },
-        "ada83.enable": {
+        "turboada.enable": {
           "type": "boolean",
           "default": true,
-          "description": "Report diagnostics from the compiler as you type."
+          "description": "Check the program as you type."
         },
-        "ada83.languageExtensions": {
+        "turboada.languageExtensions": {
           "type": "boolean",
           "default": true,
-          "description": "Admit the language extensions: protected types, controlled types, expression functions, if and case expressions, aspect specifications, access-to-subprogram types, general access types with aliased objects and 'Access, dot notation on a leading in out formal, Ada 95 unit names, the generic formal defaults beyond Ada 83, and the small features (renaming a function call, 'Valid, null procedures, function out parameters, deferred constants of any type, 'Alignment). Turn it off and the compiler is invoked with -ada83, strict ANSI/MIL-STD-1815A, where every one of those is an error naming the construct. A program that relies on an extension is not a legal Ada 83 program, which is what the strict setting is for.",
+          "description": "Allow what we add beyond the base subset, as we do by default: protected types, timed and conditional calls to a protected entry, controlled types without tagged types, child units, general and anonymous access types and access discriminants, access-to-subprogram types, modular types, if, case, quantified and declare expressions, raise expressions, expression functions, null procedures, the Pre, Post and Predicate aspects, Pre on an entry, Atomic on a protected type, user-defined literals, indexing and iteration, for ... of loops, continue, raise ... with, delta aggregates, the <> box and iterated component associations in aggregates, private extensions, requeue, delay until, streams, Atomic and Volatile, defaults for generic formals, dot notation on a leading in out formal, Ada. names for the predefined units, and a use clause that stands for its with clause. Turn it off for -ada83, strict ANSI/MIL-STD-1815A, where each of those is an error naming the construct. A program using them is not a 1815A program, and now and then one wants to be certain.",
           "scope": "resource"
         },
-        "ada83.requestTimeout": {
+        "turboada.requestTimeout": {
           "type": "number",
           "default": 15000,
-          "description": "How long, in milliseconds, to wait for one answer from the language server. Every answer costs a compilation, so a large program needs a larger number."
+          "description": "How long to wait for an answer, in milliseconds. Each one costs a compile."
         },
-        "ada83.workspaceRequestTimeout": {
+        "turboada.workspaceRequestTimeout": {
           "type": "number",
           "default": 120000,
-          "description": "How long, in milliseconds, to wait for a workspace-wide symbol search, which compiles every Ada source in the workspace root."
+          "description": "The same, for a search across the workspace. That one reads every file, so allow more."
         },
-        "ada83.includePaths": {
+        "turboada.includePaths": {
           "type": "array",
           "items": {
             "type": "string"
           },
           "default": [],
-          "description": "Directories searched for with-ed units, beyond the file's own and the workspace root. ${workspaceFolder} is substituted, and an active project's own source directories are searched after these."
+          "description": "Further places to look for with-ed units. The file's own folder and the workspace root are always read."
         },
-        "ada83.projectFile": {
+        "turboada.projectFile": {
           "type": "string",
           "default": "",
-          "description": "The project file (.gpr or .gpj) the extension builds and analyses with, passed to the compiler as -P. ${workspaceFolder} is substituted and a relative path is taken from the workspace folder. Left empty, a single .gpr or .gpj at the root of the workspace is used; if the root holds more than one, none is active until Ada 83: Select The Active Project chooses one."
+          "description": "Your project file. A lone one at the workspace root is found without asking; among several, choose from the status bar."
         },
-        "ada83.scenario": {
+        "turboada.scenario": {
           "type": "object",
           "additionalProperties": {
             "type": "string"
           },
           "default": {},
-          "description": "Scenario variables passed to the compiler as -X NAME=VALUE, which is what external (\"NAME\", ...) in the project reads. Set them from the status bar or with Ada 83: Set A Scenario Variable, which offers a typed variable exactly the values its type declares. Names are matched by case, as the compiler matches them.",
+          "description": "Scenario variables, passed as -X NAME=VALUE. These are what external (\"NAME\", ...) reads. Case matters.",
           "scope": "resource"
         },
-        "ada83.formatOnType": {
+        "turboada.formatOnType": {
           "type": "boolean",
           "default": false,
-          "description": "Reindent the line as you type it, by the manual's two-space rule. This is worked out here rather than asked of anything, so it is immediate and costs nothing."
+          "description": "Reindent each line as you type it, two spaces to a level. Worked out here, so it is free."
         },
-        "ada83.formatOnSave": {
+        "turboada.formatOnSave": {
           "type": "boolean",
           "default": false,
-          "description": "Reformat the whole file as it is saved. This asks a language model to apply the manual's style rules and keeps the answer only if it still compiles, so it costs a request per save."
+          "description": "Reformat the whole file on save. A model does this, and the answer is kept only if it still compiles."
         },
-        "ada83.formatStrength": {
+        "turboada.formatStrength": {
           "type": "string",
           "enum": [
             "indentation",
@@ -3227,9 +3256,9 @@ module.exports = { activate, deactivate };
             "Everything the manual specifies, including casing and where comments sit."
           ],
           "default": "style",
-          "description": "How much a reformat is allowed to change."
+          "description": "How far a reformat may go."
         },
-        "ada83.language": {
+        "turboada.language": {
           "type": "string",
           "enum": [
             "en",
@@ -3252,14 +3281,14 @@ module.exports = { activate, deactivate };
             "Lolcat"
           ],
           "default": "en",
-          "description": "The language error messages are read in. Anything but English asks a language model to translate the prose, leaving the pieces of your own source untouched; the English arrives first either way, and each distinct message is translated once."
+          "description": "Which language to read errors in. A model translates the prose and leaves your own names alone. The English arrives first."
         },
-        "ada83.syncDelay": {
+        "turboada.syncDelay": {
           "type": "number",
           "default": 120,
-          "description": "How long, in milliseconds, typing must pause before the buffer is sent to the compiler. Every send costs a compilation."
+          "description": "How long to wait after you stop typing, in milliseconds. Every send is a compile."
         },
-        "ada83.trace.server": {
+        "turboada.trace.server": {
           "type": "string",
           "enum": [
             "off",
@@ -3267,400 +3296,400 @@ module.exports = { activate, deactivate };
             "verbose"
           ],
           "default": "off",
-          "description": "Write the traffic between the editor and the language server to the Ada 83 output channel."
+          "description": "Log the editor's conversation with the server, for when something will not answer."
         }
       }
     },
     "commands": [
       {
-        "command": "ada83.newProject",
+        "command": "turboada.newProject",
         "title": "New Project",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(new-folder)"
       },
       {
-        "command": "ada83.build",
+        "command": "turboada.build",
         "title": "Build File",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(gear)"
       },
       {
-        "command": "ada83.check",
+        "command": "turboada.check",
         "title": "Check File",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(check)"
       },
       {
-        "command": "ada83.buildProject",
+        "command": "turboada.buildProject",
         "title": "Build Project",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(list-tree)"
       },
       {
-        "command": "ada83.buildMain",
+        "command": "turboada.buildMain",
         "title": "Build Main",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(run)"
       },
       {
-        "command": "ada83.showPlan",
+        "command": "turboada.showPlan",
         "title": "Show Build Plan",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(list-flat)"
       },
       {
-        "command": "ada83.cleanProject",
+        "command": "turboada.cleanProject",
         "title": "Clean Project",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(trash)"
       },
       {
-        "command": "ada83.selectProject",
+        "command": "turboada.selectProject",
         "title": "Select Project",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(folder-opened)"
       },
       {
-        "command": "ada83.setScenario",
+        "command": "turboada.setScenario",
         "title": "Set Scenario Variable",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(settings)"
       },
       {
-        "command": "ada83.reformat",
+        "command": "turboada.reformat",
         "title": "Reformat File",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(symbol-ruler)"
       },
       {
-        "command": "ada83.suggestFix",
+        "command": "turboada.suggestFix",
         "title": "Suggest Fix",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(lightbulb-sparkle)"
       },
       {
-        "command": "ada83.refreshProjectView",
+        "command": "turboada.refreshProjectView",
         "title": "Refresh Project View",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(refresh)"
       },
       {
-        "command": "ada83.setScenarioVariable",
+        "command": "turboada.setScenarioVariable",
         "title": "Set Variable",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(settings)"
       },
       {
-        "command": "ada83.buildMainWithProgress",
+        "command": "turboada.buildMainWithProgress",
         "title": "Build",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(gear)"
       },
       {
-        "command": "ada83.runMain",
+        "command": "turboada.runMain",
         "title": "Run",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(run)"
       },
       {
-        "command": "ada83.debugMain",
+        "command": "turboada.debugMain",
         "title": "Debug Main",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(debug-alt)"
       },
       {
-        "command": "ada83.debugMainWithProgress",
+        "command": "turboada.debugMainWithProgress",
         "title": "Debug",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(debug-alt)"
       },
       {
-        "command": "ada83.updateCompiler",
+        "command": "turboada.updateCompiler",
         "title": "Download Compiler",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(cloud-download)"
       },
       {
-        "command": "ada83.chooseCompiler",
+        "command": "turboada.chooseCompiler",
         "title": "Locate Compiler",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(tools)"
       },
       {
-        "command": "ada83.restartServer",
+        "command": "turboada.restartServer",
         "title": "Restart Language Server",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(debug-restart)"
       },
       {
-        "command": "ada83.showOutput",
+        "command": "turboada.showOutput",
         "title": "Show Server Log",
-        "category": "Ada 83",
+        "category": "TurboAda",
         "icon": "$(output)"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "ada83.refreshProjectView",
-          "when": "view == ada83.projectView",
+          "command": "turboada.refreshProjectView",
+          "when": "view == turboada.projectView",
           "group": "navigation@1"
         },
         {
-          "command": "ada83.buildMainWithProgress",
-          "when": "view == ada83.projectView && ada83.hasProject",
+          "command": "turboada.buildMainWithProgress",
+          "when": "view == turboada.projectView && turboada.hasProject",
           "group": "navigation@2"
         }
       ],
       "view/item/context": [
         {
-          "command": "ada83.buildMainWithProgress",
-          "when": "view == ada83.projectView && viewItem == ada83Main",
+          "command": "turboada.buildMainWithProgress",
+          "when": "view == turboada.projectView && viewItem == turboadaMain",
           "group": "inline@1"
         },
         {
-          "command": "ada83.runMain",
-          "when": "view == ada83.projectView && viewItem == ada83Main",
+          "command": "turboada.runMain",
+          "when": "view == turboada.projectView && viewItem == turboadaMain",
           "group": "inline@2"
         },
         {
-          "command": "ada83.debugMainWithProgress",
-          "when": "view == ada83.projectView && viewItem == ada83Main",
+          "command": "turboada.debugMainWithProgress",
+          "when": "view == turboada.projectView && viewItem == turboadaMain",
           "group": "inline@3"
         }
       ],
       "editor/title": [
         {
-          "command": "ada83.build",
-          "when": "resourceLangId == ada83",
+          "command": "turboada.build",
+          "when": "resourceLangId == turboada",
           "group": "navigation@1"
         },
         {
-          "command": "ada83.check",
-          "when": "resourceLangId == ada83",
+          "command": "turboada.check",
+          "when": "resourceLangId == turboada",
           "group": "navigation@2"
         },
         {
-          "command": "ada83.showPlan",
+          "command": "turboada.showPlan",
           "when": "resourceExtname == .gpr || resourceExtname == .gpj",
           "group": "navigation@1"
         },
         {
-          "command": "ada83.buildProject",
+          "command": "turboada.buildProject",
           "when": "resourceExtname == .gpr || resourceExtname == .gpj",
           "group": "navigation@2"
         }
       ],
       "commandPalette": [
         {
-          "command": "ada83.build",
-          "when": "resourceLangId == ada83"
+          "command": "turboada.build",
+          "when": "resourceLangId == turboada"
         },
         {
-          "command": "ada83.check",
-          "when": "resourceLangId == ada83"
+          "command": "turboada.check",
+          "when": "resourceLangId == turboada"
         },
         {
-          "command": "ada83.reformat",
-          "when": "resourceLangId == ada83"
+          "command": "turboada.reformat",
+          "when": "resourceLangId == turboada"
         },
         {
-          "command": "ada83.suggestFix",
-          "when": "resourceLangId == ada83"
+          "command": "turboada.suggestFix",
+          "when": "resourceLangId == turboada"
         },
         {
-          "command": "ada83.buildProject",
-          "when": "ada83.hasProject"
+          "command": "turboada.buildProject",
+          "when": "turboada.hasProject"
         },
         {
-          "command": "ada83.buildMain",
-          "when": "ada83.hasProject"
+          "command": "turboada.buildMain",
+          "when": "turboada.hasProject"
         },
         {
-          "command": "ada83.showPlan",
-          "when": "ada83.hasProject"
+          "command": "turboada.showPlan",
+          "when": "turboada.hasProject"
         },
         {
-          "command": "ada83.cleanProject",
-          "when": "ada83.hasProject"
+          "command": "turboada.cleanProject",
+          "when": "turboada.hasProject"
         },
         {
-          "command": "ada83.refreshProjectView",
-          "when": "ada83.hasProject"
+          "command": "turboada.refreshProjectView",
+          "when": "turboada.hasProject"
         },
         {
-          "command": "ada83.setScenarioVariable",
+          "command": "turboada.setScenarioVariable",
           "when": "false"
         },
         {
-          "command": "ada83.buildMainWithProgress",
-          "when": "ada83.hasProject"
+          "command": "turboada.buildMainWithProgress",
+          "when": "turboada.hasProject"
         },
         {
-          "command": "ada83.runMain",
+          "command": "turboada.runMain",
           "when": "false"
         },
         {
-          "command": "ada83.debugMain",
-          "when": "ada83.hasProject"
+          "command": "turboada.debugMain",
+          "when": "turboada.hasProject"
         },
         {
-          "command": "ada83.debugMainWithProgress",
+          "command": "turboada.debugMainWithProgress",
           "when": "false"
         }
       ],
       "explorer/context": [
         {
-          "command": "ada83.build",
-          "when": "resourceLangId == ada83",
-          "group": "ada83@1"
+          "command": "turboada.build",
+          "when": "resourceLangId == turboada",
+          "group": "turboada@1"
         },
         {
-          "command": "ada83.check",
-          "when": "resourceLangId == ada83",
-          "group": "ada83@2"
+          "command": "turboada.check",
+          "when": "resourceLangId == turboada",
+          "group": "turboada@2"
         },
         {
-          "command": "ada83.selectProject",
+          "command": "turboada.selectProject",
           "when": "resourceExtname == .gpr || resourceExtname == .gpj",
-          "group": "ada83@1"
+          "group": "turboada@1"
         },
         {
-          "command": "ada83.showPlan",
+          "command": "turboada.showPlan",
           "when": "resourceExtname == .gpr || resourceExtname == .gpj",
-          "group": "ada83@2"
+          "group": "turboada@2"
         }
       ],
       "editor/context": [
         {
-          "command": "ada83.check",
-          "when": "resourceLangId == ada83",
-          "group": "ada83@1"
+          "command": "turboada.check",
+          "when": "resourceLangId == turboada",
+          "group": "turboada@1"
         },
         {
-          "command": "ada83.suggestFix",
-          "when": "resourceLangId == ada83",
-          "group": "ada83@2"
+          "command": "turboada.suggestFix",
+          "when": "resourceLangId == turboada",
+          "group": "turboada@2"
         }
       ]
     },
     "keybindings": [
       {
-        "command": "ada83.build",
+        "command": "turboada.build",
         "key": "ctrl+alt+b",
         "mac": "cmd+alt+b",
-        "when": "resourceLangId == ada83"
+        "when": "resourceLangId == turboada"
       },
       {
-        "command": "ada83.check",
+        "command": "turboada.check",
         "key": "ctrl+alt+c",
         "mac": "cmd+alt+c",
-        "when": "resourceLangId == ada83"
+        "when": "resourceLangId == turboada"
       },
       {
-        "command": "ada83.buildProject",
+        "command": "turboada.buildProject",
         "key": "ctrl+alt+shift+b",
         "mac": "cmd+alt+shift+b",
-        "when": "ada83.hasProject"
+        "when": "turboada.hasProject"
       },
       {
-        "command": "ada83.setScenario",
+        "command": "turboada.setScenario",
         "key": "ctrl+alt+x",
         "mac": "cmd+alt+x",
-        "when": "ada83.hasProject"
+        "when": "turboada.hasProject"
       }
     ],
     "walkthroughs": [
       {
-        "id": "ada83.start",
+        "id": "turboada.start",
         "title": "Ada 83",
-        "description": "Compile and read Ada 83 with the compiler that checks it.",
+        "description": "Write, build and debug Ada. The compiler answers every question.",
         "steps": [
           {
-            "id": "ada83.start.compiler",
+            "id": "turboada.start.compiler",
             "title": "Get a compiler",
-            "description": "Everything here - the squiggles, the outline, the hovers, go to definition, completion, signature help and the quick fixes - is answered by `ada83` itself. The extension looks for it in `ada83.compilerPath`, then in `bin-<platform>/` under the workspace, then on PATH; found nowhere, it offers to fetch a released build, runtime and all, into its own storage. The status bar names whichever compiler answered.\n[Download the compiler](command:ada83.updateCompiler)\n[Set ada83.compilerPath](command:workbench.action.openSettings?%22ada83.compilerPath%22)",
+            "description": "Everything here is answered by `ta` itself. We look in `turboada.compilerPath`, then `bin-<platform>/`, then your PATH, and offer to fetch one if all three come up empty. The status bar names whichever answered.\n[Download the compiler](command:turboada.updateCompiler)\n[Set turboada.compilerPath](command:workbench.action.openSettings?%22turboada.compilerPath%22)",
             "media": {
-              "image": "./ada83-icon.png",
+              "image": "./turboada-icon.png",
               "altText": "The Ada 83 icon"
             },
             "completionEvents": [
-              "onSettingChanged:ada83.compilerPath",
-              "onCommand:ada83.updateCompiler"
+              "onSettingChanged:turboada.compilerPath",
+              "onCommand:turboada.updateCompiler"
             ]
           },
           {
-            "id": "ada83.start.new",
+            "id": "turboada.start.new",
             "title": "Start a project",
-            "description": "One name is the whole question. **Ada 83: New Project** writes `<name>.gpr` with a typed scenario variable, a `src/` directory and a main that prints a line, then opens it - a complete project the build commands below act on at once.\n[New project](command:ada83.newProject)",
+            "description": "New Project asks you for a name and nothing else, then writes a project that builds and runs as it stands.\n[New project](command:turboada.newProject)",
             "media": {
-              "image": "./ada83-icon.png",
+              "image": "./turboada-icon.png",
               "altText": "The Ada 83 icon"
             },
             "completionEvents": [
-              "onCommand:ada83.newProject"
+              "onCommand:turboada.newProject"
             ]
           },
           {
-            "id": "ada83.start.write",
+            "id": "turboada.start.write",
             "title": "Write a program",
-            "description": "Open a file ending in .ada, .adb or .ads and type `hello` to expand a compilation unit that writes a line. The snippets cover packages, generics, task types, accept and selective wait, variant records, fixed point and representation clauses.\n[New Ada file](command:workbench.action.files.newUntitledFile?%7B%22languageId%22%3A%22ada83%22%7D)",
+            "description": "Open a .ada, .adb or .ads file and type `hello` for a unit that writes a line. There are snippets for packages, generics, tasks, variant records and much else.\n[New Ada file](command:workbench.action.files.newUntitledFile?%7B%22languageId%22%3A%22turboada%22%7D)",
             "media": {
-              "image": "./ada83-icon.png",
+              "image": "./turboada-icon.png",
               "altText": "The Ada 83 icon"
             }
           },
           {
-            "id": "ada83.start.build",
+            "id": "turboada.start.build",
             "title": "Build it",
-            "description": "Ctrl+Alt+B builds the file in front of you into a native executable, Ctrl+Alt+C checks it without producing one. Both run as tasks, so their diagnostics land in the Problems panel.\n[Build this file](command:ada83.build)",
+            "description": "Ctrl+Alt+B builds the file before you; Ctrl+Alt+C only checks it. Either way the complaints land in the Problems panel.\n[Build this file](command:turboada.build)",
             "media": {
-              "image": "./ada83-icon.png",
+              "image": "./turboada-icon.png",
               "altText": "The Ada 83 icon"
             }
           },
           {
-            "id": "ada83.start.project",
+            "id": "turboada.start.project",
             "title": "Select a project",
-            "description": "A `.gpr` or `.gpj` at the root of the workspace is picked up on its own; anywhere else, name it in `ada83.projectFile`. The project's source directories are then searched for with-ed units, its mains become tasks, and its scenario variables - the `external (...)` its variables are set from - are set from the status bar and passed to every build.\n[Select the active project](command:ada83.selectProject)",
+            "description": "A project at the workspace root is picked up on its own; elsewhere, name it in `turboada.projectFile`. Its source folders are then searched for with-ed units, and its mains become tasks.\n[Select the active project](command:turboada.selectProject)",
             "media": {
-              "image": "./ada83-icon.png",
+              "image": "./turboada-icon.png",
               "altText": "The Ada 83 icon"
             },
             "completionEvents": [
-              "onCommand:ada83.selectProject"
+              "onCommand:turboada.selectProject"
             ]
           },
           {
-            "id": "ada83.start.scenario",
+            "id": "turboada.start.scenario",
             "title": "Set the scenario",
-            "description": "A project's knobs are its scenario variables, read from `external (...)`. **Ada 83: Set A Scenario Variable** (`Ctrl+Alt+X`, or the status bar) lists what the project declares - a typed variable is offered exactly its type's literals - and what you pick rides every build and plan as `-X NAME=VALUE`. Then **Build The Active Project** (`Ctrl+Alt+Shift+B`) compiles and links its mains; the compiler stamps the scenario into the object directory and rebuilds what a change invalidates.\n[Set a scenario variable](command:ada83.setScenario)\n[Build the project](command:ada83.buildProject)",
+            "description": "A project's knobs are its scenario variables. Ctrl+Alt+X lists what it declares and offers a typed one only the values its type allows. Your choice rides every build, and changing it rebuilds what it invalidates.\n[Set a scenario variable](command:turboada.setScenario)\n[Build the project](command:turboada.buildProject)",
             "media": {
-              "image": "./ada83-scenario-mock.svg",
+              "image": "./turboada-scenario-mock.svg",
               "altText": "A rendering of the scenario-variable picker (not a screenshot)"
             },
             "completionEvents": [
-              "onCommand:ada83.buildProject"
+              "onCommand:turboada.buildProject"
             ]
           },
           {
-            "id": "ada83.start.debug",
+            "id": "turboada.start.debug",
             "title": "Debug it",
-            "description": "**Ada 83: Debug A Main From The Project** — or the Debug button on a main in the project view, or `F5` — rebuilds the main with `-g` and starts it under the compiler's own debug adapter: `ada83 --dap` speaks the Debug Adapter Protocol itself, lldb-dap underneath, so breakpoints, stepping and backtraces read in Ada's own names.\n[Debug a main](command:ada83.debugMain)",
+            "description": "F5, or the Debug button on a main, rebuilds it with `-g` and starts it under our own adapter. Breakpoints, stepping and backtraces all read in Ada's names.\n[Debug a main](command:turboada.debugMain)",
             "media": {
-              "image": "./ada83-icon.png",
+              "image": "./turboada-icon.png",
               "altText": "The Ada 83 icon"
             },
             "completionEvents": [
-              "onCommand:ada83.debugMain"
+              "onCommand:turboada.debugMain"
             ]
           },
           {
-            "id": "ada83.start.manual",
+            "id": "turboada.start.manual",
             "title": "Read the standard, not a memory of it",
-            "description": "ANSI/MIL-STD-1815A travels inside this extension. A language model working here can search it with the `search_ada83_manual` tool, so a question of legality is answered out of the standard rather than out of a recollection of some later Ada.\n[Show the server log](command:ada83.showOutput)",
+            "description": "The manual travels inside this extension. A model working here can search it, and so answers a question of legality out of the standard rather than out of memory.\n[Show the server log](command:turboada.showOutput)",
             "media": {
-              "image": "./ada83-icon.png",
+              "image": "./turboada-icon.png",
               "altText": "The Ada 83 icon"
             }
           }
@@ -3669,29 +3698,29 @@ module.exports = { activate, deactivate };
     ],
     "chatInstructions": [
       {
-        "path": "./ada83.instructions.md",
-        "when": "editorLangId == ada83"
+        "path": "./turboada.instructions.md",
+        "when": "editorLangId == turboada"
       }
     ],
     "languageModelTools": [
       {
-        "name": "search_ada83_manual",
-        "toolReferenceName": "ada83Manual",
+        "name": "search_turboada_manual",
+        "toolReferenceName": "turboadaManual",
         "displayName": "Search the Ada 83 Manual",
         "canBeReferencedInPrompt": true,
         "icon": "$(book)",
         "tags": [
           "ada",
-          "ada83"
+          "turboada"
         ],
         "userDescription": "Look a rule up in the bundled Ada 83 reference manual.",
-        "modelDescription": "Searches the full text of the Ada 83 Reference Manual (ANSI/MIL-STD-1815A, the 1983 standard) and returns the matching clauses verbatim, each headed by its clause number and title. Use this tool whenever a question of Ada 83 legality, semantics or wording comes up: whether a construct exists in Ada 83 at all, reserved words, syntax productions, visibility and scope, overload resolution, type and subtype rules, derived types, discriminants, generics, tasking, exceptions, representation clauses, attributes, pragmas, the predefined environment, or implementation permissions and dependencies. It is also the way to read a clause you already know by number. Prefer it to recalling Ada from memory, which is usually Ada 95, 2005, 2012 or 2022 and wrong here. Query it with a clause number such as 4.5.7 or 13.1, or with the Ada terms in question such as universal_integer, elaboration order, derived type, static expression or representation clause.",
+        "modelDescription": "Searches the bundled reference manual and returns the matching clauses verbatim, each headed by its clause number and title. The manual is the full text of ANSI/MIL-STD-1815A, the 1983 standard; every construct this compiler admits beyond it is described in an Extension callout inside the clause it extends, and the style guide the formatter applies closes the manual. Use this tool whenever legality, semantics or wording is in question: whether a construct exists here at all, reserved words, syntax productions, visibility and scope, overload resolution, type and subtype rules, discriminants, generics, tasking, exceptions, representation clauses, attributes, pragmas, the predefined environment, or implementation permissions. It is also the way to read a clause you already know by number. Prefer it to recalling Ada from memory: most of Ada 95, 2005, 2012 and 2022 is not here, tagged types included, and what is here is exactly what the callouts describe. Query it with a clause number such as 4.5.7 or 13.1, or with the terms in question such as universal_integer, protected type, expression function or representation clause.",
         "inputSchema": {
           "type": "object",
           "properties": {
             "query": {
               "type": "string",
-              "description": "A clause number such as 4.5.7, or the Ada 83 terms to look up, such as 'universal_integer' or 'overload resolution'."
+              "description": "A clause number such as 4.5.7, or the terms to look up, such as 'universal_integer' or 'overload resolution'."
             }
           },
           "required": [
@@ -3702,9 +3731,9 @@ module.exports = { activate, deactivate };
     ],
     "problemMatchers": [
       {
-        "name": "ada83",
-        "owner": "ada83",
-        "source": "ada83",
+        "name": "turboada",
+        "owner": "turboada",
+        "source": "turboada",
         "fileLocation": [
           "autoDetect",
           "${workspaceFolder}"
@@ -3721,7 +3750,7 @@ module.exports = { activate, deactivate };
     ],
     "taskDefinitions": [
       {
-        "type": "ada83",
+        "type": "turboada",
         "required": [
           "task"
         ],
@@ -3746,15 +3775,15 @@ module.exports = { activate, deactivate };
     ],
     "breakpoints": [
       {
-        "language": "ada83"
+        "language": "turboada"
       }
     ],
     "debuggers": [
       {
-        "type": "ada83",
+        "type": "turboada",
         "label": "Ada",
         "languages": [
-          "ada83"
+          "turboada"
         ],
         "configurationAttributes": {
           "launch": {
@@ -3764,7 +3793,7 @@ module.exports = { activate, deactivate };
             "properties": {
               "program": {
                 "type": "string",
-                "description": "The executable to debug. Build it with -g first; Ada 83: Debug A Main From The Project does both."
+                "description": "The executable to debug. Build it with -g first; TurboAda: Debug A Main From The Project does both."
               },
               "args": {
                 "type": "array",
@@ -3788,21 +3817,21 @@ module.exports = { activate, deactivate };
         },
         "initialConfigurations": [
           {
-            "type": "ada83",
+            "type": "turboada",
             "request": "launch",
-            "name": "Ada 83: debug the main",
+            "name": "TurboAda:debug the main",
             "program": "${workspaceFolder}/main",
             "stopOnEntry": false
           }
         ],
         "configurationSnippets": [
           {
-            "label": "Ada 83: Debug A Main",
-            "description": "Launch a main built with -g under the compiler's own debug adapter, ada83 --dap.",
+            "label": "TurboAda:Debug A Main",
+            "description": "Launch a main built with -g under the compiler's own debug adapter, ta --dap.",
             "body": {
-              "type": "ada83",
+              "type": "turboada",
               "request": "launch",
-              "name": "^\"Ada 83: debug ${1:main}\"",
+              "name": "^\"TurboAda:debug ${1:main}\"",
               "program": "^\"\\${workspaceFolder}/${1:main}\"",
               "stopOnEntry": false
             }
@@ -3815,93 +3844,122 @@ module.exports = { activate, deactivate };
 </script>
 
 <script id="README.md" type="text/markdown">
-# Ada 83 for Visual Studio Code
+<p align="center">
+  <img src="turboada-logo.png" alt="Ada" width="180">
+</p>
 
-Ada 83 (ANSI/MIL-STD-1815A) language support, powered by the [`ada83`
-compiler](https://github.com/AdaDoom3/Ada83). The extension talks to
-`ada83 --lsp`, the compiler's own language server, so diagnostics, hovers,
-completions and every other answer come from the exact same front end that
-builds your code — there is no second parser to disagree with the first.
+# TurboAda for Visual Studio Code
+
+Ada development for Visual Studio Code, built on the
+[TurboAda compiler](https://github.com/AdaDoom3/TurboAda).
+
+TurboAda compiles the language of ANSI/MIL-STD-1815A together with the
+extensions listed under Dialect, and emits native code through LLVM.
+
+This extension is a front end for `ta --lsp`, the compiler's own language
+server. Diagnostics, definitions, completions and outlines are produced by
+the same code that compiles your program. One parser. One set of rules.
+The editor cannot disagree with the build.
 
 ## Features
 
-- **Diagnostics** as you type, spanning the whole name they complain about.
-  A `previous declaration at ...` note arrives as a linked related location
-  — click it in the Problems panel and land on the declaration — and a
-  `did you mean ...?` note becomes a one-click quick fix that renames the
-  identifier under the diagnostic. All three come from the compiler itself,
-  not from a regex over its output
-- **Go to Definition**, including into `ada83-runtime.ada`, the standard library
-- **Find All References**, **Document Highlights** and **workspace symbols**
-- **Hover** showing the declaration as Ada 83 declares it
-- **Completion** for names in scope, including the runtime
-- **Signature Help** for the call being written
-- **Document Outline** and **Folding**, from the compiler's own view of the unit
-- **Syntax highlighting** for all 63 Ada 83 reserved words, and **file icons**
-  for `.ada`, `.ads`, `.adb`, `.gpr` and `.gpj`
-- **Semantic Highlighting**: the compiler says what kind of thing each name
-  is — package, type, subprogram, parameter, enumeration literal, object —
-  so a theme can colour `COUNT` the type apart from `COUNT` the variable,
-  which no grammar can
-- **Code Lenses** over every library-level parameterless procedure — the
-  ones the compiler accepts as mains — offering *Build*, *Build Main* and
-  *Plan*
-- **A Project sidebar** — the tree `-P` resolved, imports and all, with
-  Build, Run and Debug on every main, live build progress, and scenario
-  variables as rows
-- **Debugging, adapter included** — `F5` or the Debug button on a main
-  rebuilds it with `-g` and starts it under `ada83 --dap`: the compiler
-  speaks the Debug Adapter Protocol itself, lldb-dap underneath, Ada
-  names throughout, and a **Tasks** view of the program's Ada tasks at
-  every stop
-- **Snippets** from a compilation unit to a record representation clause
-- **Build** and **Check** commands (`Ctrl+Alt+B` / `Ctrl+Alt+C`), wired up as
-  tasks with a problem matcher
-- **Project files**, `.gpr` and `.gpj`: plan, build and clean with `-P`, mains
-  as tasks, **scenario variables** set from a typed picker (`Ctrl+Alt+X`)
-- **New Project** scaffolds a buildable project from one name
-- **The compiler itself, found or fetched**: point at one, or let the
-  extension download a released build
-- **Suggest A Fix**, a model-written repair shown as a diff, applied only if
-  you approve it and only if it compiles
-- **Format Document** and format-on-save to the style the standard itself
-  uses, plus model-free reindentation as you type
-- **Diagnostics in your language**, translated on request, English by default
-- A **`search_ada83_manual` tool** so AI assistants read the standard rather
-  than recall a later Ada
+**Diagnostics.** Errors and warnings as you type, underlining the whole
+name at fault. A previous-declaration note arrives as a linked location:
+click it in the Problems panel to land on the declaration. A spelling
+suggestion becomes a one-click fix that renames the identifier. All three
+come from the compiler, not from a pattern match over its output.
+
+**Navigation.** Go to Definition, Find All References, Document
+Highlights and workspace symbol search. Definitions resolve into
+`turboada-runtime.ada`, the standard library, like any other unit.
+
+**Hover and Completion.** Hover shows a declaration as the language
+declares it. Completion offers the names in scope, the runtime included.
+Signature Help tracks the call being written.
+
+**Semantic Highlighting.** The compiler reports what each name is:
+package, type, subprogram, parameter, enumeration literal, object. A
+theme can therefore colour the type `COUNT` differently from the variable
+`COUNT`. No grammar-based highlighter can make that distinction.
+
+**Syntax Highlighting and Icons.** The 63 reserved words of the base
+subset and the three added by the extensions. Aspect specifications,
+quantified expressions, `for ... of` loops and `continue`. File icons for
+`.ada`, `.ads`, `.adb`, `.gpr` and `.gpj`.
+
+**Outline and Folding.** Taken from the compiler's view of the unit.
+
+**Code Lenses.** Build, Build Main and Plan appear over every
+library-level parameterless procedure, which are the ones the compiler
+accepts as mains.
+
+**Project Sidebar.** The tree that `-P` resolves, imports included, with
+Build, Run and Debug on every main, live build progress, and scenario
+variables as rows.
+
+**Integrated Debugging.** F5, or the Debug button on a main, rebuilds
+with `-g` and starts the program under `ta --dap`. The compiler speaks
+the Debug Adapter Protocol itself, over lldb-dap, in Ada names
+throughout. A Tasks view lists the program's Ada tasks at every stop.
+
+**Build and Check.** `Ctrl+Alt+B` and `Ctrl+Alt+C`, wired as tasks with a
+problem matcher.
+
+**Project Files.** Plan, build and clean `.gpr` and `.gpj` projects with
+`-P`. Mains become tasks. Scenario variables are set from a typed picker
+(`Ctrl+Alt+X`). New Project scaffolds a buildable project from one name.
+
+**Compiler Management.** Point the extension at a compiler, or let it
+download a released build.
+
+**Snippets.** Written in the manual's style, from a compilation unit to a
+record representation clause, a protected type or a contract.
+
+**Formatting.** Format Document and format-on-save, to the style the
+standard itself uses. Reindentation as you type requires no model.
+
+**Translated Diagnostics.** Compiler messages read in your language on
+request. English by default.
+
+**Suggest A Fix.** A model-written repair, shown as a diff. It is applied
+only if you approve it, and only if it compiles.
+
+**Manual Search.** The `search_turboada_manual` tool gives AI assistants
+the language manual to read, so they answer from the standard rather than
+from a later Ada they half-remember.
 
 ## Zero to compiled
 
 1. Install the extension and open a folder.
-2. If no `ada83` is found, accept the offer to **download** one (or point
-   `ada83.compilerPath` at yours). The status bar names whichever compiler
+2. If no `ta` is found, accept the offer to **download** one (or point
+   `turboada.compilerPath` at yours). The status bar names whichever compiler
    answered.
-3. Run **Ada 83: New Project**, give it a name.
+3. Run **TurboAda: New Project**, give it a name.
 4. `Ctrl+Alt+Shift+B` builds it; the binary lands beside the project file.
 
 ## The compiler
 
-Everything past colouring is answered by the `ada83` executable, so the
+Everything past colouring is answered by the `ta` executable, so the
 extension resolves one on activation, in this order:
 
-1. **`ada83.compilerPath`**, when you have set it;
+1. **`turboada.compilerPath`**, when you have set it;
 2. **`bin-linux/`, `bin-macos/` or `bin-windows/` under the workspace** —
    the layout the compiler's own repository builds into;
-3. **`ada83` on PATH**;
+3. **`ta` on PATH**;
 4. failing all three, an **offer to download** a released build or locate one.
 
 A project may pin its own: `IDE'Compiler_Command ("ada")` names the
 compiler the project is built and analysed with whenever
-`ada83.compilerPath` is not set, and the setting always wins when it is.
+`turboada.compilerPath` is not set, and the setting always wins when it is.
 
 A candidate counts only if `--version` answers. The download goes to the
 extension's own storage, is staged and adopted only after `--version`
-answers there too, and always places `ada83-runtime.ada` — which the
+answers there too, and always places `turboada-runtime.ada` — which the
 compiler requires beside its executable — next to the binary, plus the
 vendored DLLs on Windows. Whatever is adopted is written back to
-`ada83.compilerPath`, put first on `PATH` in integrated terminals, and named
-in the status bar with its version. **Ada 83: Download Or Update The
-Compiler** re-fetches at any time; `ada83.downloadBase` points the fetch at
+`turboada.compilerPath`, put first on `PATH` in integrated terminals, and named
+in the status bar with its version. **TurboAda: Download Or Update The
+Compiler** re-fetches at any time; `turboada.downloadBase` points the fetch at
 a mirror (http, https or file URLs).
 
 The extension makes no other network request, and sends no telemetry.
@@ -3910,7 +3968,7 @@ The extension makes no other network request, and sends no telemetry.
 
 Point the extension at a project and it hands it to the compiler as
 `-P`. A single `.gpr` or `.gpj` at the root of the workspace is found on its
-own; anywhere else, name it in `ada83.projectFile` or run **Ada 83: Select
+own; anywhere else, name it in `turboada.projectFile` or run **TurboAda: Select
 The Active Project**. If the root holds more than one, none is active until
 you choose — the status bar says so and clicking it asks.
 
@@ -3918,12 +3976,12 @@ With a project active:
 
 - its **source directories**, and those of everything it withs, are searched
   for with-ed units, so go-to-definition and completion see the whole tree
-- **Ada 83: Build The Active Project** (`Ctrl+Alt+Shift+B`) compiles and
+- **TurboAda: Build The Active Project** (`Ctrl+Alt+Shift+B`) compiles and
   links; each **main** is also a task of its own, and **Build A Main From
   The Project** picks one
-- **Ada 83: Show The Build Plan** runs `-n`, which prints what the project
+- **TurboAda: Show The Build Plan** runs `-n`, which prints what the project
   resolves to — sources, switches, imports and externals — and builds nothing
-- **Ada 83: Clean The Project** removes the compiler's own products (`.ali`,
+- **TurboAda: Clean The Project** removes the compiler's own products (`.ali`,
   `.ll`, `.o`, `.s`) from `Object_Dir` and the mains from `Exec_Dir`, after
   asking. It touches nothing else
 - diagnostics from the project file itself land in the Problems panel with
@@ -3931,7 +3989,7 @@ With a project active:
   not an error, so a GNAT tree carrying `package Pretty_Printer` marks it
   and builds
 
-**Ada 83: New Project** goes the other way: give it a name and it writes
+**TurboAda: New Project** goes the other way: give it a name and it writes
 `<name>.gpr` with a typed scenario variable, a `src/` directory and a main
 that prints a line — a complete project every command above acts on at once.
 
@@ -3945,13 +4003,13 @@ type Build_Kind is ("debug", "release");
 Build : Build_Kind := external ("BUILD", "debug");
 ```
 
-**Ada 83: Set A Scenario Variable** (`Ctrl+Alt+X`, or the status bar item)
+**TurboAda: Set A Scenario Variable** (`Ctrl+Alt+X`, or the status bar item)
 asks the compiler to list what the project declares, types, defaults and
 all (`--externals`). A typed variable is offered exactly its type's
 literals, because those are exactly the values it may take — a closed list
 and not a text box; an untyped one opens a text box with its default filled
 in, and emptying that box unsets it again. What you choose is remembered in
-the workspace, as `ada83.scenario`, and passed to every build and every
+the workspace, as `turboada.scenario`, and passed to every build and every
 plan as `-X NAME=VALUE`; the language server is then restarted over the
 source directories that scenario resolves to. The same picker resets every
 variable to the project's own defaults, and names one the project does not
@@ -3991,7 +4049,7 @@ disagree with the build.
   since the last build, like the build tasks do
 - **scenario variables** are rows, `NAME = value (origin)`. Clicking a
   typed one opens exactly its type's literals, an untyped one a text box
-  with its default filled in, and the choice lands in `ada83.scenario`
+  with its default filled in, and the choice lands in `turboada.scenario`
   exactly as the picker's would
 - the view refreshes when a project file is saved or the scenario
   changes, and by hand from its title bar
@@ -4015,11 +4073,11 @@ such flag and work with any.
 
 ## Debugging
 
-`F5`, **Ada 83: Debug A Main From The Project**, or the **Debug** button
+`F5`, **TurboAda: Debug A Main From The Project**, or the **Debug** button
 on a main in the project view. The extension rebuilds the main with `-g`
 first — the same progress build the sidebar's Build runs, `-P` and every
 `-X` preserved — then starts the executable under the debug adapter,
-which is the compiler itself: `ada83 --dap` speaks the Debug Adapter
+which is the compiler itself: `ta --dap` speaks the Debug Adapter
 Protocol on stdio, drives lldb-dap underneath — LLVM end to end, the
 same toolchain that assembled the code — and does the Ada spelling
 itself: **breakpoints, stepping, variables and expressions** work, and
@@ -4034,15 +4092,15 @@ parts: no adapter code in the extension, no debugger script anywhere.
 A `launch.json` is optional — with none, `F5` on the project debugs its
 first main — and when one names a `program`, the project is still
 rebuilt with `-g` before the adapter gets it. A compiler that predates
-`--dap` is refused with a message pointing at **Ada 83: Download Or
-Update The Compiler**, not half-served; `ada83.debugAdapterPath` runs
+`--dap` is refused with a message pointing at **TurboAda: Download Or
+Update The Compiler**, not half-served; `turboada.debugAdapterPath` runs
 any other DAP executable — raw lldb-dap, say — verbatim in its place,
 for those who want the untranslated view, and a project naming
 `IDE'Debugger_Command` runs that command line, quotes honored, while
 the setting is empty.
 
-The same story holds outside the editor. `ada83 -g` builds a binary
-every LLVM tool reads — lldb, lldb-dap — and `ada83 --debug prog`
+The same story holds outside the editor. `ta -g` builds a binary
+every LLVM tool reads — lldb, lldb-dap — and `ta --debug prog`
 debugs one in the terminal, the same engine and the same Ada spelling
 as the adapter. gdb is the exception: its Ada mode wants its own
 dialect of the debug information, so build with `-ggdb` — `-g` in every
@@ -4060,27 +4118,27 @@ extension does not declare.
 <!-- BEGIN GENERATED: commands -->
 | Command | Keys | Identifier |
 |---|---|---|
-| Ada 83: New Project |  | `ada83.newProject` |
-| Ada 83: Build File | `ctrl+alt+b` / `cmd+alt+b` | `ada83.build` |
-| Ada 83: Check File | `ctrl+alt+c` / `cmd+alt+c` | `ada83.check` |
-| Ada 83: Build Project | `ctrl+alt+shift+b` / `cmd+alt+shift+b` | `ada83.buildProject` |
-| Ada 83: Build Main |  | `ada83.buildMain` |
-| Ada 83: Show Build Plan |  | `ada83.showPlan` |
-| Ada 83: Clean Project |  | `ada83.cleanProject` |
-| Ada 83: Select Project |  | `ada83.selectProject` |
-| Ada 83: Set Scenario Variable | `ctrl+alt+x` / `cmd+alt+x` | `ada83.setScenario` |
-| Ada 83: Reformat File |  | `ada83.reformat` |
-| Ada 83: Suggest Fix |  | `ada83.suggestFix` |
-| Ada 83: Refresh Project View |  | `ada83.refreshProjectView` |
-| Ada 83: Set Variable |  | `ada83.setScenarioVariable` |
-| Ada 83: Build |  | `ada83.buildMainWithProgress` |
-| Ada 83: Run |  | `ada83.runMain` |
-| Ada 83: Debug Main |  | `ada83.debugMain` |
-| Ada 83: Debug |  | `ada83.debugMainWithProgress` |
-| Ada 83: Download Compiler |  | `ada83.updateCompiler` |
-| Ada 83: Locate Compiler |  | `ada83.chooseCompiler` |
-| Ada 83: Restart Language Server |  | `ada83.restartServer` |
-| Ada 83: Show Server Log |  | `ada83.showOutput` |
+| TurboAda: New Project |  | `turboada.newProject` |
+| TurboAda: Build File | `ctrl+alt+b` / `cmd+alt+b` | `turboada.build` |
+| TurboAda: Check File | `ctrl+alt+c` / `cmd+alt+c` | `turboada.check` |
+| TurboAda: Build Project | `ctrl+alt+shift+b` / `cmd+alt+shift+b` | `turboada.buildProject` |
+| TurboAda: Build Main |  | `turboada.buildMain` |
+| TurboAda: Show Build Plan |  | `turboada.showPlan` |
+| TurboAda: Clean Project |  | `turboada.cleanProject` |
+| TurboAda: Select Project |  | `turboada.selectProject` |
+| TurboAda: Set Scenario Variable | `ctrl+alt+x` / `cmd+alt+x` | `turboada.setScenario` |
+| TurboAda: Reformat File |  | `turboada.reformat` |
+| TurboAda: Suggest Fix |  | `turboada.suggestFix` |
+| TurboAda: Refresh Project View |  | `turboada.refreshProjectView` |
+| TurboAda: Set Variable |  | `turboada.setScenarioVariable` |
+| TurboAda: Build |  | `turboada.buildMainWithProgress` |
+| TurboAda: Run |  | `turboada.runMain` |
+| TurboAda: Debug Main |  | `turboada.debugMain` |
+| TurboAda: Debug |  | `turboada.debugMainWithProgress` |
+| TurboAda: Download Compiler |  | `turboada.updateCompiler` |
+| TurboAda: Locate Compiler |  | `turboada.chooseCompiler` |
+| TurboAda: Restart Language Server |  | `turboada.restartServer` |
+| TurboAda: Show Server Log |  | `turboada.showOutput` |
 <!-- END GENERATED: commands -->
 
 ## Settings
@@ -4088,22 +4146,22 @@ extension does not declare.
 <!-- BEGIN GENERATED: settings -->
 | Setting | Default | What it does |
 |---|---|---|
-| `ada83.compilerPath` | `"ada83"` | Path to the ada83 compiler: set, it always wins; unset, a project naming IDE'Compiler_Command ("ada") pins the compiler the project is built and analysed with. |
-| `ada83.downloadBase` | `"https://raw.githubusercontent.com/AdaDoom3/Ada83/main"` | Where Ada 83: Download Or Update The Compiler fetches from. |
-| `ada83.debugAdapterPath` |  | A Debug Adapter Protocol executable to run in place of the compiler's own adapter, verbatim and with no arguments — raw lldb-dap, say, for the untranslated view. |
-| `ada83.enable` | `true` | Report diagnostics from the compiler as you type. |
-| `ada83.languageExtensions` | `true` | Admit the language extensions: protected types, controlled types, expression functions, if and case expressions, aspect specifications, access-to-subprogram types, general access types with aliased objects and 'Access, dot notation on a leading in out formal, Ada 95 unit names, the generic formal defaults beyond Ada 83, and the small features (renaming a function call, 'Valid, null procedures, function out parameters, deferred constants of any type, 'Alignment). |
-| `ada83.requestTimeout` | `15000` | How long, in milliseconds, to wait for one answer from the language server. |
-| `ada83.workspaceRequestTimeout` | `120000` | How long, in milliseconds, to wait for a workspace-wide symbol search, which compiles every Ada source in the workspace root. |
-| `ada83.includePaths` | `[]` | Directories searched for with-ed units, beyond the file's own and the workspace root. |
-| `ada83.projectFile` |  | The project file (.gpr or .gpj) the extension builds and analyses with, passed to the compiler as -P. |
-| `ada83.scenario` | `{}` | Scenario variables passed to the compiler as -X NAME=VALUE, which is what external ("NAME", ...) in the project reads. |
-| `ada83.formatOnType` | `false` | Reindent the line as you type it, by the manual's two-space rule. |
-| `ada83.formatOnSave` | `false` | Reformat the whole file as it is saved. |
-| `ada83.formatStrength` | `"style"` | How much a reformat is allowed to change. |
-| `ada83.language` | `"en"` | The language error messages are read in. |
-| `ada83.syncDelay` | `120` | How long, in milliseconds, typing must pause before the buffer is sent to the compiler. |
-| `ada83.trace.server` | `"off"` | Write the traffic between the editor and the language server to the Ada 83 output channel. |
+| `turboada.compilerPath` | `"ta"` | Path to the TurboAda compiler: set, it always wins; unset, a project naming IDE'Compiler_Command ("ada") pins the compiler the project is built and analysed with. |
+| `turboada.downloadBase` | `"https://raw.githubusercontent.com/AdaDoom3/TurboAda/main"` | Where TurboAda: Download Or Update The Compiler fetches from. |
+| `turboada.debugAdapterPath` |  | A Debug Adapter Protocol executable to run in place of the compiler's own adapter, verbatim and with no arguments — raw lldb-dap, say, for the untranslated view. |
+| `turboada.enable` | `true` | Check the program as you type. |
+| `turboada.languageExtensions` | `true` | Allow what we add beyond the base subset, as we do by default: protected types, timed and conditional calls to a protected entry, controlled types without tagged types, child units, general and anonymous access types and access discriminants, access-to-subprogram types, modular types, if, case, quantified and declare expressions, raise expressions, expression functions, null procedures, the Pre, Post and Predicate aspects, Pre on an entry, Atomic on a protected type, user-defined literals, indexing and iteration, for ... |
+| `turboada.requestTimeout` | `15000` | How long, in milliseconds, to wait for one answer from the language server. |
+| `turboada.workspaceRequestTimeout` | `120000` | The same, for a search across the workspace. That one reads every file, so allow more. |
+| `turboada.includePaths` | `[]` | Directories searched for with-ed units, beyond the file's own and the workspace root. |
+| `turboada.projectFile` |  | The project file (.gpr or .gpj) the extension builds and analyses with, passed to the compiler as -P. |
+| `turboada.scenario` | `{}` | Scenario variables passed to the compiler as -X NAME=VALUE, which is what external ("NAME", ...) in the project reads. |
+| `turboada.formatOnType` | `false` | Reindent the line as you type it, by the manual's two-space rule. |
+| `turboada.formatOnSave` | `false` | Reformat the whole file as it is saved. |
+| `turboada.formatStrength` | `"style"` | How far a reformat may go. |
+| `turboada.language` | `"en"` | The language error messages are read in. |
+| `turboada.syncDelay` | `120` | How long, in milliseconds, typing must pause before the buffer is sent to the compiler. |
+| `turboada.trace.server` | `"off"` | Log the editor's conversation with the server, for when something will not answer. |
 <!-- END GENERATED: settings -->
 
 ## Snippets
@@ -4146,35 +4204,43 @@ extension does not declare.
 | `integerio` | An instantiation of Text_IO.Integer_IO |
 | `pragma` | A pragma |
 | `for use` | A record representation clause |
+| `exprfunc` | An expression function |
+| `pre` | A procedure with a precondition and a postcondition |
+| `predicate` | A subtype with a predicate |
+| `ifexpr` | An if expression |
+| `forall` | A quantified expression |
+| `forof` | A loop over the components of an array or container |
+| `protected` | A protected type, its entry and its body |
+| `controlled` | A controlled type and its finalization |
 <!-- END GENERATED: snippets -->
 
 ## Requirements
 
 - Visual Studio Code 1.106 or later, or a compatible editor.
-- The `ada83` compiler. If none is found the extension offers to download a
+- The `ta` compiler. If none is found the extension offers to download a
   released build; nothing else is required.
-- `ada83-runtime.ada` beside the compiler executable — the download places
+- `turboada-runtime.ada` beside the compiler executable — the download places
   it there; keep it there if you install by hand.
 - To debug: a compiler new enough to know `--dap` — the extension offers
   the update — with lldb-dap on PATH underneath it, or
-  `ada83.debugAdapterPath` naming any DAP executable to run instead.
+  `turboada.debugAdapterPath` naming any DAP executable to run instead.
 
 ## What this is not
 
 Honesty is cheaper than a surprised bug report:
 
-- **Not Ada 95, 2005, 2012 or 2022.** No tagged types, no child units, no
-  `aliased`, none of the 6 reserved words Ada 95 added. The compiler
-  rejects them, and this extension serves this compiler. For modern Ada,
-  use AdaCore's tooling. A set of later constructs is available as named
-  extensions admitted by default, and refused when
-  `ada83.languageExtensions` is off — protected
-  types, controlled types, expression functions, if and case expressions,
-  aspect specifications, access-to-subprogram and general access types,
-  dot notation on a leading `in out` formal, Ada 95 unit names, the
-  generic formal defaults beyond Ada 83, and a handful of small ones —
-  and a program that uses one is not a legal Ada 83 program, which is why
-  the setting is off by default.
+- **Not Ada 95, 2005, 2012 or 2022.** The compiler admits a set of later
+  constructs by default: protected types, controlled types, child units,
+  general and anonymous access, contracts and predicates, expression
+  functions, user-defined literals, indexing and iteration, streams and
+  the rest that `turboada.languageExtensions` lists. It has no tagged types
+  and nothing that dispatches, no asynchronous select,
+  and none of `Ada.Containers`, `Ada.Strings` or
+  `Ada.Numerics`. The chat instructions and the prompts the extension
+  sends a language model say exactly that, so an assistant writes what
+  compiles here. Turn the setting off and every later construct is an
+  error, which is what a program that must be legal Ada 83 wants. For
+  modern Ada, use AdaCore's tooling.
 - **Not GNAT tooling.** A GNAT project tree usually loads — unknown
   attributes are warnings, and `package IDE` is read: `Compiler_Command
   ("ada")` and `Debugger_Command` steer the extension, the rest ride the
@@ -4195,9 +4261,9 @@ Honesty is cheaper than a surprised bug report:
 
 ## More information
 
-- [Compiler and source](https://github.com/AdaDoom3/Ada83)
-- [Issue tracker](https://github.com/AdaDoom3/Ada83/issues)
-- [Language reference (`ada83-manual.md`)](https://github.com/AdaDoom3/Ada83/blob/main/ada83-manual.md)
+- [Compiler and source](https://github.com/AdaDoom3/TurboAda)
+- [Issue tracker](https://github.com/AdaDoom3/TurboAda/issues)
+- [Language reference (`turboada-manual.md`)](https://github.com/AdaDoom3/TurboAda/blob/main/turboada-manual.md)
 </script>
 
 <script id="readme-tables.js" type="text/javascript">
@@ -4281,6 +4347,28 @@ console.log ('README tables regenerated from the manifest');
 Every user-visible change, newest first. The version is the extension's
 own; the compiler versions independently and answers `--version`.
 
+## 1.1.0
+
+The constructs the compiler admits beyond Ada 83 are the default dialect
+everywhere the extension speaks:
+
+- The chat instructions and the Format and Suggest A Fix prompts name what
+  the compiler admits beyond Ada 83, and what it does not have: tagged types,
+  the asynchronous select, and the container,
+  string and numerics libraries. With `turboada.languageExtensions` off they
+  ask for Ada 83 alone.
+- The compile check behind Format and Suggest A Fix passes `-ada83` when
+  the setting is off, as the language server and the builds already did.
+- The grammar highlights `aliased`, `overriding` and `protected`, protected
+  units, aspect specifications and their marks, quantified expressions,
+  `for ... of` loops and `continue`. An aspect specification is no longer
+  taken for a context clause.
+- The snippets follow the manual's style guide, and new ones cover
+  expression functions, contracts, predicates, protected types, controlled
+  types and `for ... of` loops.
+- The manual search tool says that the manual describes each later
+  construct in an Extension callout inside the clause it extends.
+
 ## 1.0.0
 
 The first release, grown alongside the compiler's 2026 campaign. In the
@@ -4288,7 +4376,7 @@ order the pieces landed:
 
 The language client:
 
-- Diagnostics as you type, from `ada83 --lsp`, with the compiler's quick fixes
+- Diagnostics as you type, from `ta --lsp`, with the compiler's quick fixes
 - Go to definition, references, document highlights, workspace symbols
 - Hover, completion, signature help, outline, folding
 - Syntax highlighting for the 63 reserved words; brackets, folding and
@@ -4302,7 +4390,7 @@ The language client:
   approval and only if it compiles
 - Diagnostics translated on request (es, fr, de, zh-CN, ja, hi, lolcat),
   English untouched by default
-- The `search_ada83_manual` language-model tool and Ada 83 chat
+- The `search_turboada_manual` language-model tool and Ada 83 chat
   instructions, so assistants read ANSI/MIL-STD-1815A instead of
   recalling a later Ada
 
@@ -4318,15 +4406,15 @@ Project files:
   warnings, so GNAT trees load
 - Debugging: F5, Debug A Main From The Project, and a Debug button on
   every main — a `-g` rebuild, then the compiler itself as the debug
-  adapter (`ada83 --dap`, lldb-dap underneath); while the program is
+  adapter (`ta --dap`, lldb-dap underneath); while the program is
   stopped, a Tasks view of its Ada tasks in Run and Debug
 - Sources grouped by language in the project view — Ada, C, C++, Other
   with each file's recorded language — from the plan's `Ada_Sources`,
   `C_Sources`, `CPP_Sources` and `Other_Sources`; absent keys leave the
   view as it was
 - `package IDE` consumed: `Compiler_Command ("ada")` pins the project's
-  compiler while `ada83.compilerPath` is unset, `Debugger_Command` names
-  the debug command line, quotes honored, while `ada83.debugAdapterPath`
+  compiler while `turboada.compilerPath` is unset, `Debugger_Command` names
+  the debug command line, quotes honored, while `turboada.debugAdapterPath`
   is empty, and the remaining attributes ride the project tooltip
 
 Standing alone:
@@ -4340,40 +4428,68 @@ Standing alone:
 - File icons for `.ada`, `.ads`, `.adb`, `.gpr`, `.gpj` as an icon theme
 - A walkthrough covering compiler fetch, scaffolding, scenario and build
 - README reference tables generated from the manifest at packaging time
-- `ada83.languageExtensions`, off, passes `-ada83` to every invocation —
+- `turboada.languageExtensions`, off, passes `-ada83` to every invocation —
   the language server, Build This File, Check This File and the project
   tasks — so a workspace built with the extensions is analysed with them
-  too. Off by default: with the flag off the compiler is strict
-  ANSI/MIL-STD-1815A, which is what this extension is for
+  too. On by default, as in the compiler; turned off, it makes the
+  compiler strict ANSI/MIL-STD-1815A
 </script>
 
-<script id="ada83.instructions.md" type="text/markdown">
+<script id="turboada.instructions.md" type="text/markdown">
 ---
 name: Ada 83
-description: What Ada 83 (ANSI/MIL-STD-1815A) allows, and where to look it up.
+description: The dialect of Ada these files are written in, what it lacks, and where to look it up.
 ---
 
-These files are Ada 83 (ANSI/MIL-STD-1815A). They are not Ada 95, 2005, 2012
-or 2022, and the `ada83` compiler that checks them rejects anything later.
+These files are Ada 83 (ANSI/MIL-STD-1815A) as the `ta` compiler takes it,
+and by default the compiler also admits a set of later constructs. Write
+them wherever they make the code clearer:
 
-Never write tagged types, protected objects or child units, and never write
-`abstract`, `aliased`, `requeue`, `until`, `interface`, `overriding`,
-`synchronized` or `some`: every one of those is Ada 95, 2005 or 2012. Ada 83
-has exactly 63 reserved words, and a construct needing a 64th is not Ada 83.
-The compiler does accept a set of later constructs by default, protected and
-controlled types among them; if the project you are editing is built with
-`-ada83`, none of them belongs in these files.
+- protected types and objects, entries and barriers, task discriminants, and
+  a timed or conditional call to a protected entry
+  (`select Obj.E; or delay 0.1; end select;`);
+- controlled types (`Ada.Finalization`), without tagged types;
+- child units, public and private, and a context-clause `use` that stands
+  for its `with`;
+- general and anonymous access types, `aliased`, `'Access`, access
+  discriminants, `not null`, and access-to-subprogram types;
+- modular types;
+- if, case and quantified expressions, expression functions and null
+  procedures;
+- the `Pre`, `Post` and `Predicate` aspects, and `pragma Assert`; `Pre` on
+  an entry too, evaluated where the call is made, before it is queued;
+- user-defined literals, indexing and iteration (`String_Literal`,
+  `Constant_Indexing`, `Variable_Indexing`, `Iterable`);
+- `for ... of` loops, `continue`, `raise ... with`, and `Ada.Exceptions`;
+- private extensions (`is new P with private`), `requeue` between the
+  entries of one protected object, and `delay until`;
+- streams (`'Read`, `'Write`, `Stream_Size`, `Ada.Streams.Stream_IO`);
+- `Atomic` and `Volatile`, and defaults for generic formals; `Atomic` may
+  name a protected type, whose action is indivisible already.
 
-Prefer the predefined packages the bundled runtime declares: `Standard`,
-`System`, `Text_IO` and its `Integer_IO`, `Float_IO`, `Fixed_IO` and
-`Enumeration_IO`, `Sequential_IO`, `Direct_IO`, `IO_Exceptions`, `Calendar`,
-`Low_Level_IO`, `Machine_Code`, `Unchecked_Conversion` and
-`Unchecked_Deallocation`.
+Never write what the compiler does not have:
 
-When legality is in question at all - visibility, overload resolution,
-representation clauses, implementation permissions, or whether a construct is
-Ada 83 in the first place - read the standard with the `search_ada83_manual`
-tool (`#ada83Manual`) instead of recalling modern Ada.
+- tagged types, or anything that dispatches: no `tagged`, `'Class`,
+  `abstract`, `interface`, `synchronized` or extension aggregate;
+- an asynchronous select, or an access-to-protected-subprogram type;
+- `Ada.Containers`, `Ada.Strings`, `Ada.Characters.Handling`,
+  `Ada.Numerics` or `Ada.Real_Time`, none of which exists here.
+
+The predefined packages are `Standard`, `System`, `Text_IO` with its
+`Integer_IO`, `Float_IO`, `Fixed_IO` and `Enumeration_IO`, `Sequential_IO`,
+`Direct_IO`, `IO_Exceptions`, `Calendar`, `Low_Level_IO`, `Machine_Code`,
+`Unchecked_Conversion` and `Unchecked_Deallocation`, also reachable under
+their `Ada.` names, beside `Ada.Finalization`, `Ada.Streams`, `Ada.Exceptions`,
+`Ada.Assertions` and `Ada.Command_Line`.
+
+If the project is built with `-ada83` (the setting `turboada.languageExtensions`
+off), none of the later constructs belongs in these files: write Ada 83 as
+the 1983 standard defines it.
+
+When legality is in question at all, read the manual with the
+`search_turboada_manual` tool (`#turboadaManual`) instead of recalling modern Ada.
+Every construct admitted beyond 1983 is described in an Extension callout in
+the clause it extends.
 </script>
 
 <script id="language-configuration.json" type="application/json">
@@ -4450,19 +4566,19 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "prefix": "procedure",
     "body": [
       "procedure ${1:Name} is",
-      "begin",
-      "   $0",
-      "end ${1:Name};"
+      "  begin",
+      "    $0",
+      "  end;"
     ],
     "description": "A procedure body"
   },
   "function body": {
     "prefix": "function",
     "body": [
-      "function ${1:Name} return ${2:Type} is",
-      "begin",
-      "   $0",
-      "end ${1:Name};"
+      "function ${1:Name} return ${2:Integer} is",
+      "  begin",
+      "    $0",
+      "  end;"
     ],
     "description": "A function body"
   },
@@ -4470,8 +4586,8 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "prefix": "package",
     "body": [
       "package ${1:Name} is",
-      "   $0",
-      "end ${1:Name};"
+      "  $0",
+      "end;"
     ],
     "description": "A package specification"
   },
@@ -4479,16 +4595,16 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "prefix": "packagebody",
     "body": [
       "package body ${1:Name} is",
-      "   $0",
-      "end ${1:Name};"
+      "  $0",
+      "end;"
     ],
     "description": "A package body"
   },
   "for loop": {
     "prefix": "for",
     "body": [
-      "for ${1:I} in ${2:1 .. 10} loop",
-      "   $0",
+      "for ${1:I} in ${2:1..10} loop",
+      "  $0",
       "end loop;"
     ],
     "description": "A for loop"
@@ -4497,7 +4613,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "prefix": "while",
     "body": [
       "while ${1:Condition} loop",
-      "   $0",
+      "  $0",
       "end loop;"
     ],
     "description": "A while loop"
@@ -4506,7 +4622,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "prefix": "if",
     "body": [
       "if ${1:Condition} then",
-      "   $0",
+      "  $0",
       "end if;"
     ],
     "description": "An if statement"
@@ -4514,11 +4630,10 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
   "case statement": {
     "prefix": "case",
     "body": [
-      "case ${1:Expression} is",
-      "   when ${2:Choice} =>",
-      "      $0",
-      "   when others =>",
-      "      null;",
+      "case ${1:Item} is",
+      "  when ${2:Choice} =>",
+      "    $0",
+      "  when others => null;",
       "end case;"
     ],
     "description": "A case statement"
@@ -4527,9 +4642,9 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "prefix": "declare",
     "body": [
       "declare",
-      "   ${1:Name} : ${2:Type};",
+      "  ${1:Name} : ${2:Integer};",
       "begin",
-      "   $0",
+      "  $0",
       "end;"
     ],
     "description": "A block statement with declarations"
@@ -4537,19 +4652,17 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
   "record type": {
     "prefix": "record",
     "body": [
-      "type ${1:Name} is",
-      "   record",
-      "      ${2:Field} : ${3:Type};",
-      "   end record;"
+      "type ${1:Name}_State is record",
+      "    ${2:Field} : ${3:Integer};",
+      "  end record;$0"
     ],
     "description": "A record type declaration"
   },
   "exception handler": {
     "prefix": "exception",
     "body": [
-      "exception",
-      "   when ${1:Constraint_Error} =>",
-      "      $0"
+      "exception when ${1:Constraint_Error} =>",
+      "  $0"
     ],
     "description": "An exception handler"
   },
@@ -4557,10 +4670,11 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "prefix": "hello",
     "body": [
       "with Text_IO; use Text_IO;",
+      "",
       "procedure ${1:Hello} is",
-      "begin",
-      "   Put_Line (\"${2:Hello, Ada 83!}\");",
-      "end ${1:Hello};"
+      "  begin",
+      "    Put_Line (\"${2:Hello, Ada 83!}\");",
+      "  end;"
     ],
     "description": "A complete program"
   },
@@ -4568,13 +4682,13 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "prefix": "generic",
     "body": [
       "generic",
-      "   type ${1:Element} is private;",
-      "procedure ${2:Name} (${3:Item} : in out ${1:Element});",
+      "  type ${1:Element_T} is private;",
+      "procedure ${2:Name} (${3:Item} : in out ${1:Element_T});",
       "",
-      "procedure ${2:Name} (${3:Item} : in out ${1:Element}) is",
-      "begin",
-      "   $0",
-      "end ${2:Name};"
+      "procedure ${2:Name} (${3:Item} : in out ${1:Element_T}) is",
+      "  begin",
+      "    $0",
+      "  end;"
     ],
     "description": "A generic procedure and its body"
   },
@@ -4582,10 +4696,10 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "prefix": "genericpackage",
     "body": [
       "generic",
-      "   type ${1:Element} is private;",
+      "  type ${1:Element_T} is private;",
       "package ${2:Name} is",
-      "   $0",
-      "end ${2:Name};"
+      "  $0",
+      "end;"
     ],
     "description": "A generic package specification"
   },
@@ -4593,15 +4707,15 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "prefix": "tasktype",
     "body": [
       "task type ${1:Worker} is",
-      "   entry ${2:Start} (${3:Item} : in ${4:Integer});",
-      "end ${1:Worker};",
+      "    entry ${2:Start} (${3:Item} : ${4:Integer});",
+      "  end;",
       "",
       "task body ${1:Worker} is",
-      "begin",
-      "   accept ${2:Start} (${3:Item} : in ${4:Integer}) do",
+      "  begin",
+      "    accept ${2:Start} (${3:Item} : ${4:Integer}) do",
       "      $0",
-      "   end ${2:Start};",
-      "end ${1:Worker};"
+      "    end;",
+      "  end;"
     ],
     "description": "A task type, its entry and its body"
   },
@@ -4611,18 +4725,18 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
       "task ${1:Name};",
       "",
       "task body ${1:Name} is",
-      "begin",
-      "   $0",
-      "end ${1:Name};"
+      "  begin",
+      "    $0",
+      "  end;"
     ],
     "description": "A single task and its body"
   },
   "entry and accept": {
     "prefix": "accept",
     "body": [
-      "accept ${1:Name} (${2:Item} : in ${3:Integer}) do",
-      "   $0",
-      "end ${1:Name};"
+      "accept ${1:Name} (${2:Item} : ${3:Integer}) do",
+      "  $0",
+      "end;"
     ],
     "description": "An accept statement with a body"
   },
@@ -4630,11 +4744,11 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "prefix": "select",
     "body": [
       "select",
-      "   accept ${1:Name} do",
-      "      $0",
-      "   end ${1:Name};",
+      "  accept ${1:Name} do",
+      "    $0",
+      "  end;",
       "or",
-      "   terminate;",
+      "  terminate;",
       "end select;"
     ],
     "description": "A selective wait with a terminate alternative"
@@ -4643,10 +4757,10 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "prefix": "selectdelay",
     "body": [
       "select",
-      "   ${1:Worker}.${2:Start} (${3:Item});",
+      "  ${1:Worker}.${2:Start} (${3:Item});",
       "or",
-      "   delay ${4:1.0};",
-      "   $0",
+      "  delay ${4:1.0};",
+      "  $0",
       "end select;"
     ],
     "description": "A timed entry call"
@@ -4655,11 +4769,11 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "prefix": "selectelse",
     "body": [
       "select",
-      "   accept ${1:Name} do",
-      "      ${2:null;}",
-      "   end ${1:Name};",
+      "  accept ${1:Name} do",
+      "    ${2:null;}",
+      "  end;",
       "else",
-      "   $0",
+      "  $0",
       "end select;"
     ],
     "description": "A selective wait whose else part runs when no rendezvous is ready"
@@ -4667,57 +4781,55 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
   "variant record": {
     "prefix": "variant",
     "body": [
-      "type ${1:Shape} (${2:Kind} : ${3:Shape_Kind} := ${4:Circle}) is",
-      "   record",
-      "      case ${2:Kind} is",
-      "         when ${4:Circle} =>",
-      "            ${5:Radius} : ${6:Float};",
-      "         when others =>",
-      "            null;",
-      "      end case;",
-      "   end record;$0"
+      "type ${1:Shape}_State (${2:Kind} : ${3:Shape_Kind} := ${4:Circle}) is record",
+      "    case ${2:Kind} is",
+      "      when ${4:Circle} =>",
+      "        ${5:Radius} : ${6:Float};",
+      "      when others => null;",
+      "    end case;",
+      "  end record;$0"
     ],
     "description": "A record type with a variant part"
   },
   "enumeration type": {
     "prefix": "enum",
     "body": [
-      "type ${1:Colour} is (${2:Red}, ${3:Amber}, ${4:Green});$0"
+      "type ${1:Colour}_Kind is (${2:Red}, ${3:Amber}, ${4:Green});$0"
     ],
     "description": "An enumeration type"
   },
   "array type": {
     "prefix": "array",
     "body": [
-      "type ${1:Table} is array (${2:Positive} range <>) of ${3:Integer};$0"
+      "type Array_${1:Integer} is array (${2:Positive} range <>) of ${1:Integer};$0"
     ],
     "description": "An unconstrained array type"
   },
   "subtype with range": {
     "prefix": "subtype",
     "body": [
-      "subtype ${1:Small} is ${2:Integer} range ${3:0} .. ${4:255};$0"
+      "subtype ${1:Small} is ${2:Integer} range ${3:0}..${4:255};$0"
     ],
     "description": "A constrained subtype"
   },
   "fixed point type": {
     "prefix": "fixed",
     "body": [
-      "type ${1:Money} is delta ${2:0.01} range ${3:0.0} .. ${4:1_000.0};$0"
+      "type Fixed_${1:Money} is delta ${2:0.01} range ${3:0.0}..${4:1_000.0};$0"
     ],
     "description": "A fixed point type"
   },
   "floating point type": {
     "prefix": "float",
     "body": [
-      "type ${1:Real} is digits ${2:12};$0"
+      "type Real_${1:Metres} is digits ${2:12};$0"
     ],
     "description": "A floating point type"
   },
   "access type": {
     "prefix": "access",
     "body": [
-      "type ${1:Link} is access ${2:Node};$0"
+      "type Ptr_${1:Node} is access ${1:Node}_State;$0"
     ],
     "description": "An access type"
   },
@@ -4726,14 +4838,14 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "body": [
       "type ${1:Handle} is private;",
       "private",
-      "   type ${1:Handle} is new ${2:Integer};$0"
+      "  type ${1:Handle} is new ${2:Integer};$0"
     ],
     "description": "A private type and its full declaration"
   },
   "exception declaration": {
     "prefix": "exceptiondecl",
     "body": [
-      "${1:Name}_Error : exception;$0"
+      "${1:Name} : exception;$0"
     ],
     "description": "An exception declaration"
   },
@@ -4747,10 +4859,9 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
   "loop with exit": {
     "prefix": "loop",
     "body": [
-      "${1:Search} :",
-      "loop",
-      "   exit ${1:Search} when ${2:Done};",
-      "   $0",
+      "${1:Search}: loop",
+      "  exit ${1:Search} when ${2:Done};",
+      "  $0",
       "end loop ${1:Search};"
     ],
     "description": "A named loop with an exit"
@@ -4759,42 +4870,115 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "prefix": "textio",
     "body": [
       "with Text_IO; use Text_IO;",
+      "",
       "procedure ${1:Main} is",
-      "begin",
-      "   Put_Line (\"${2:text}\");$0",
-      "end ${1:Main};"
+      "  begin",
+      "    Put_Line (\"${2:text}\");$0",
+      "  end;"
     ],
     "description": "A main procedure that writes a line"
   },
   "integer io instantiation": {
     "prefix": "integerio",
     "body": [
-      "package ${1:Int_IO} is new Text_IO.Integer_IO (${2:Integer});",
-      "use ${1:Int_IO};$0"
+      "package ${1:Int_IO} is new Text_IO.Integer_IO (${2:Integer}); use ${1:Int_IO};$0"
     ],
     "description": "An instantiation of Text_IO.Integer_IO"
   },
   "pragma": {
     "prefix": "pragma",
     "body": [
-      "pragma ${1|Inline,Pack,Priority,Suppress,Elaborate,Optimize|} (${2:Name});$0"
+      "pragma ${1|Inline,Pack,Priority,Suppress,Elaborate,Optimize,Assert|} (${2:Name});$0"
     ],
     "description": "A pragma"
   },
   "representation clause": {
     "prefix": "for use",
     "body": [
-      "for ${1:Register} use",
-      "   record",
-      "      ${2:Field} at ${3:0} range ${4:0} .. ${5:7};",
-      "   end record;$0"
+      "for ${1:Register} use record",
+      "    ${2:Field} at ${3:0} range ${4:0}..${5:7};",
+      "  end record;$0"
     ],
     "description": "A record representation clause"
+  },
+  "expression function": {
+    "prefix": "exprfunc",
+    "body": [
+      "function ${1:Twice} (${2:Item} : ${3:Integer}) return ${3:Integer} is",
+      "  (${0:2 * Item});"
+    ],
+    "description": "An expression function"
+  },
+  "contract": {
+    "prefix": "pre",
+    "body": [
+      "procedure ${1:Bump} (${2:Item} : in out ${3:Natural})",
+      "  with Pre  => ${4:Item < ${3:Natural}'Last},",
+      "       Post => ${5:Item = Item'Old + 1};$0"
+    ],
+    "description": "A procedure with a precondition and a postcondition"
+  },
+  "predicate subtype": {
+    "prefix": "predicate",
+    "body": [
+      "subtype ${1:Even} is ${2:Integer} with Predicate => ${1:Even} mod 2 = 0;$0"
+    ],
+    "description": "A subtype with a predicate"
+  },
+  "if expression": {
+    "prefix": "ifexpr",
+    "body": [
+      "(if ${1:Condition} then ${2:1} else ${3:0})$0"
+    ],
+    "description": "An if expression"
+  },
+  "quantified expression": {
+    "prefix": "forall",
+    "body": [
+      "(for ${1|all,some|} ${2:Item} of ${3:Items} => ${4:Item > 0})$0"
+    ],
+    "description": "A quantified expression"
+  },
+  "for of loop": {
+    "prefix": "forof",
+    "body": [
+      "for ${1:Item} of ${2:Items} loop",
+      "  $0",
+      "end loop;"
+    ],
+    "description": "A loop over the components of an array or container"
+  },
+  "protected type": {
+    "prefix": "protected",
+    "body": [
+      "protected type ${1:Counter} is",
+      "    procedure ${2:Increment};",
+      "    entry ${3:Await};",
+      "  private",
+      "    ${4:Count} : Natural := 0;",
+      "  end;",
+      "",
+      "protected body ${1:Counter} is",
+      "  procedure ${2:Increment} is begin ${4:Count} := ${4:Count} + 1; end;",
+      "  entry ${3:Await} when ${4:Count} > 0 is begin ${4:Count} := ${4:Count} - 1; end;",
+      "end;$0"
+    ],
+    "description": "A protected type, its entry and its body"
+  },
+  "controlled type": {
+    "prefix": "controlled",
+    "body": [
+      "type ${1:Session}_State is new Ada.Finalization.Limited_Controlled with record",
+      "    ${2:Count} : Natural := 0;",
+      "  end record;",
+      "procedure Finalize (${3:Item} : in out ${1:Session}_State);$0"
+    ],
+    "description": "A controlled type and its finalization"
   }
 }
 </script>
 
-<script id="syntaxes/ada83.tmLanguage.json" type="application/json">
+<script id="syntaxes/turboada.tmLanguage.json" type="application/json">
 {
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "Ada 83",
@@ -4805,10 +4989,12 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     { "include": "#character" },
     { "include": "#number" },
     { "include": "#pragma" },
+    { "include": "#aspect" },
     { "include": "#context" },
     { "include": "#label" },
     { "include": "#declaration" },
     { "include": "#closing" },
+    { "include": "#quantified" },
     { "include": "#loop_parameter" },
     { "include": "#choice" },
     { "include": "#association" },
@@ -4858,7 +5044,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
       ]
     },
     "context": {
-      "begin": "(?i)\\b(with|use)\\b(?=\\s+(?!function\\b|procedure\\b|record\\b|at\\b)[A-Za-z])",
+      "begin": "(?i)(?:^|(?<=;))\\s*\\b(with|use)\\b(?=\\s+(?!(?:function|procedure|package|record|private|null|at|type|all|pre|post|predicate|inline|pack|atomic|volatile|atomic_components|volatile_components|implicit_dereference|constant_indexing|variable_indexing|convention|import|export|external_name|suppress|unreferenced|pure|preelaborate|priority|size|storage_size|small|alignment|stream_size|integer_literal|real_literal|string_literal|address|default_iterator|iterator_element|iterable)\\b)[A-Za-z][A-Za-z0-9_.]*\\s*(?:[,;]|$))",
       "beginCaptures": {
         "1": { "name": "keyword.other.ada" }
       },
@@ -4880,7 +5066,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     "pragma": {
       "patterns": [
         {
-          "match": "(?i)\\b(pragma)\\s+(controlled|elaborate|inline|interface|list|memory_size|optimize|pack|page|priority|shared|storage_unit|suppress|system_name)\\b",
+          "match": "(?i)\\b(pragma)\\s+(assert|atomic|atomic_components|controlled|convention|elaborate|elaborate_all|export|import|inline|interface|list|memory_size|optimize|pack|page|preelaborate|priority|profile|pure|restrictions|shared|storage_unit|suppress|system_name|unreferenced|volatile|volatile_components)\\b",
           "captures": {
             "1": { "name": "keyword.other.pragma.ada" },
             "2": { "name": "support.function.pragma.ada" }
@@ -4932,7 +5118,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
           }
         },
         {
-          "match": "(?i)\\b(task)\\s+(body\\s+|type\\s+)?([A-Za-z][A-Za-z0-9_]*)",
+          "match": "(?i)\\b(task|protected)\\s+(body\\s+|type\\s+)?([A-Za-z][A-Za-z0-9_]*)",
           "captures": {
             "1": { "name": "keyword.other.ada" },
             "2": { "name": "keyword.other.ada" },
@@ -5005,7 +5191,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
       ]
     },
     "loop_parameter": {
-      "match": "(?i)\\b(for)\\s+([A-Za-z][A-Za-z0-9_]*)\\s+(in)\\b\\s*(reverse\\b)?",
+      "match": "(?i)\\b(for)\\s+([A-Za-z][A-Za-z0-9_]*)\\s+(in|of)\\b\\s*(reverse\\b)?",
       "captures": {
         "1": { "name": "keyword.other.ada" },
         "2": { "name": "variable.other.loop.ada" },
@@ -5054,11 +5240,11 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
       "patterns": [
         {
           "name": "support.type.ada",
-          "match": "(?i)\\b(Integer|Natural|Positive|Float|Boolean|Character|String|Duration|Short_Integer|Long_Integer|Short_Float|Long_Float|Short_Short_Integer|Long_Long_Integer|Universal_Integer|Universal_Real|File_Type|File_Mode|Address|Priority)\\b"
+          "match": "(?i)\\b(Integer|Natural|Positive|Float|Boolean|Character|String|Duration|Short_Integer|Long_Integer|Short_Float|Long_Float|Short_Short_Integer|Long_Long_Integer|Universal_Integer|Universal_Real|File_Type|File_Mode|Address|Priority|Controlled|Limited_Controlled|Root_Stream_Type|Stream_Element|Stream_Element_Array|Stream_Element_Offset|Stream_Element_Count|Exception_Occurrence)\\b"
         },
         {
           "name": "support.class.ada",
-          "match": "(?i)\\b(Standard|ASCII|System|Calendar|Text_IO|Sequential_IO|Direct_IO|IO_Exceptions|Low_Level_IO|Machine_Code|Unchecked_Conversion|Unchecked_Deallocation|Integer_IO|Float_IO|Fixed_IO|Enumeration_IO)\\b"
+          "match": "(?i)\\b(Standard|ASCII|System|Calendar|Text_IO|Sequential_IO|Direct_IO|IO_Exceptions|Low_Level_IO|Machine_Code|Unchecked_Conversion|Unchecked_Deallocation|Integer_IO|Float_IO|Fixed_IO|Enumeration_IO|Ada|Finalization|Streams|Stream_IO|Exceptions|Assertions|Command_Line|Integer_Text_IO|Float_Text_IO)\\b"
         }
       ]
     },
@@ -5070,12 +5256,12 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
         },
         {
           "name": "support.class.exception.ada",
-          "match": "(?i)\\b(Constraint_Error|Numeric_Error|Program_Error|Storage_Error|Tasking_Error|Status_Error|Mode_Error|Name_Error|Use_Error|Device_Error|End_Error|Data_Error|Layout_Error|Time_Error)\\b"
+          "match": "(?i)\\b(Constraint_Error|Numeric_Error|Program_Error|Storage_Error|Tasking_Error|Status_Error|Mode_Error|Name_Error|Use_Error|Device_Error|End_Error|Data_Error|Layout_Error|Time_Error|Assertion_Error)\\b"
         }
       ]
     },
     "keyword": {
-      "comment": "All 63 reserved words take one scope, so every construct's bracket words match under any theme: procedure/is/begin/exception/end one color, accept/do/end one color, if/then/end if one color. Only null stands apart, because it is a value, and its Dark+ color happens to coincide.",
+      "comment": "Ada 83's 63 reserved words and the three the extensions reserve take one scope, so every construct's bracket words match under any theme: procedure/is/begin/exception/end one color, accept/do/end one color, if/then/end if one color. Only null stands apart, because it is a value, and its Dark+ color happens to coincide.",
       "patterns": [
         {
           "name": "constant.language.null.ada",
@@ -5083,7 +5269,11 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
         },
         {
           "name": "keyword.other.ada",
-          "match": "(?i)\\b(abort|abs|accept|access|all|and|array|at|begin|body|case|constant|declare|delay|delta|digits|do|else|elsif|end|entry|exception|exit|for|function|generic|goto|if|in|is|limited|loop|mod|new|not|of|or|others|out|package|pragma|private|procedure|raise|range|record|rem|renames|return|reverse|select|separate|subtype|task|terminate|then|type|use|when|while|with|xor)\\b"
+          "match": "(?i)\\b(abort|abs|accept|access|aliased|all|and|array|at|begin|body|case|constant|declare|delay|delta|digits|do|else|elsif|end|entry|exception|exit|for|function|generic|goto|if|in|is|limited|loop|mod|new|not|of|or|others|out|overriding|package|pragma|private|procedure|protected|raise|range|record|rem|renames|return|reverse|select|separate|subtype|task|terminate|then|type|use|when|while|with|xor)\\b"
+        },
+        {
+          "name": "keyword.other.ada",
+          "match": "(?i)\\bcontinue\\b(?=\\s*(?:;|when\\b))"
         }
       ]
     },
@@ -5107,6 +5297,38 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
         { "name": "punctuation.section.parens.ada", "match": "[()]" },
         { "name": "punctuation.definition.attribute.ada", "match": "'" }
       ]
+    },
+    "aspect": {
+      "begin": "(?i)\\b(with)\\s+(?=(?:pre|post|predicate|inline|pack|atomic|volatile|atomic_components|volatile_components|implicit_dereference|constant_indexing|variable_indexing|convention|import|export|external_name|suppress|unreferenced|pure|preelaborate|priority|size|storage_size|small|alignment|stream_size|integer_literal|real_literal|string_literal|address|default_iterator|iterator_element|iterable)\\b)",
+      "beginCaptures": {
+        "1": { "name": "keyword.other.ada" }
+      },
+      "end": "(?i)(?=\\bis\\b|;)",
+      "patterns": [
+        {
+          "name": "entity.other.attribute-name.aspect.ada",
+          "match": "(?i)\\b(?:pre|post|predicate|inline|pack|atomic|volatile|atomic_components|volatile_components|implicit_dereference|constant_indexing|variable_indexing|convention|import|export|external_name|suppress|unreferenced|pure|preelaborate|priority|size|storage_size|small|alignment|stream_size|integer_literal|real_literal|string_literal|address|default_iterator|iterator_element|iterable)\\b(?=\\s*(?:=>|,|;|$|\\bis\\b))"
+        },
+        { "include": "#comment" },
+        { "include": "#string" },
+        { "include": "#character" },
+        { "include": "#number" },
+        { "include": "#quantified" },
+        { "include": "#attribute" },
+        { "include": "#predefined" },
+        { "include": "#literal" },
+        { "include": "#association" },
+        { "include": "#keyword" },
+        { "include": "#operator" },
+        { "include": "#punctuation" }
+      ]
+    },
+    "quantified": {
+      "match": "(?i)\\b(for)\\s+(all|some)\\b",
+      "captures": {
+        "1": { "name": "keyword.other.ada" },
+        "2": { "name": "keyword.other.ada" }
+      }
     }
   }
 }
@@ -5227,29 +5449,29 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
   }
 }
 </script>
-<script id="ada83-file-icons.json" type="application/json">
+<script id="turboada-file-icons.json" type="application/json">
 {
   "iconDefinitions": {
-    "ada83-source":      { "iconPath": "./ada83-icon-source.svg" },
-    "ada83-spec":        { "iconPath": "./ada83-icon-spec.svg" },
-    "ada83-body":        { "iconPath": "./ada83-icon-body.svg" },
-    "ada83-project":     { "iconPath": "./ada83-icon-project.svg" },
-    "ada83-file":        { "iconPath": "./ada83-icon-file.svg" },
-    "ada83-folder":      { "iconPath": "./ada83-icon-folder.svg" },
-    "ada83-folder-open": { "iconPath": "./ada83-icon-folder-open.svg" }
+    "turboada-source":      { "iconPath": "./turboada-icon-source.svg" },
+    "turboada-spec":        { "iconPath": "./turboada-icon-spec.svg" },
+    "turboada-body":        { "iconPath": "./turboada-icon-body.svg" },
+    "turboada-project":     { "iconPath": "./turboada-icon-project.svg" },
+    "turboada-file":        { "iconPath": "./turboada-icon-file.svg" },
+    "turboada-folder":      { "iconPath": "./turboada-icon-folder.svg" },
+    "turboada-folder-open": { "iconPath": "./turboada-icon-folder-open.svg" }
   },
-  "file": "ada83-file",
-  "folder": "ada83-folder",
-  "folderExpanded": "ada83-folder-open",
+  "file": "turboada-file",
+  "folder": "turboada-folder",
+  "folderExpanded": "turboada-folder-open",
   "fileExtensions": {
-    "ada": "ada83-source",
-    "adb": "ada83-body",
-    "ads": "ada83-spec",
-    "gpr": "ada83-project",
-    "gpj": "ada83-project"
+    "ada": "turboada-source",
+    "adb": "turboada-body",
+    "ads": "turboada-spec",
+    "gpr": "turboada-project",
+    "gpj": "turboada-project"
   },
   "languageIds": {
-    "ada83": "ada83-source"
+    "turboada": "turboada-source"
   }
 }
 </script>
@@ -5315,7 +5537,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
   }
 }
 </script>
-<script id="ada83-icon-activity.svg" type="image/svg+xml">
+<script id="turboada-icon-activity.svg" type="image/svg+xml">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
   <circle cx="12" cy="12" r="10.4" fill="none" stroke="#c5c5c5"
           stroke-width="1.7"/>
@@ -5324,7 +5546,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
 </svg>
 </script>
 
-<script id="ada83-icon-source.svg" type="image/svg+xml">
+<script id="turboada-icon-source.svg" type="image/svg+xml">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
   <path d="M3.5 1.5h6l3 3v10h-9z" fill="none" stroke="#808080"/>
   <path d="M9.5 1.5v3h3" fill="none" stroke="#808080"/>
@@ -5333,7 +5555,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
 </svg>
 </script>
 
-<script id="ada83-icon-spec.svg" type="image/svg+xml">
+<script id="turboada-icon-spec.svg" type="image/svg+xml">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
   <path d="M3.5 1.5h6l3 3v10h-9z" fill="none" stroke="#808080"/>
   <path d="M9.5 1.5v3h3" fill="none" stroke="#808080"/>
@@ -5344,7 +5566,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
 </svg>
 </script>
 
-<script id="ada83-icon-body.svg" type="image/svg+xml">
+<script id="turboada-icon-body.svg" type="image/svg+xml">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
   <path d="M3.5 1.5h6l3 3v10h-9z" fill="none" stroke="#808080"/>
   <path d="M9.5 1.5v3h3" fill="none" stroke="#808080"/>
@@ -5355,7 +5577,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
 </svg>
 </script>
 
-<script id="ada83-icon-project.svg" type="image/svg+xml">
+<script id="turboada-icon-project.svg" type="image/svg+xml">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
   <path d="M3.5 1.5h6l3 3v10h-9z" fill="none" stroke="#808080"/>
   <path d="M9.5 1.5v3h3" fill="none" stroke="#808080"/>
@@ -5366,7 +5588,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
 </svg>
 </script>
 
-<script id="ada83-icon-file.svg" type="image/svg+xml">
+<script id="turboada-icon-file.svg" type="image/svg+xml">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
   <path d="M3.5 1.5h6l3 3v10h-9z" fill="none" stroke="#808080"/>
   <path d="M9.5 1.5v3h3" fill="none" stroke="#808080"/>
@@ -5374,13 +5596,13 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
 </svg>
 </script>
 
-<script id="ada83-icon-folder.svg" type="image/svg+xml">
+<script id="turboada-icon-folder.svg" type="image/svg+xml">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
   <path d="M1.5 3.5h4.2l1.6 2h7.2v7h-13z" fill="none" stroke="#808080"/>
 </svg>
 </script>
 
-<script id="ada83-scenario-mock.svg" type="image/svg+xml">
+<script id="turboada-scenario-mock.svg" type="image/svg+xml">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 400"
      font-family="sans-serif">
   <rect width="640" height="400" fill="#1e2430"/>
@@ -5388,7 +5610,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
         letter-spacing="2">A RENDERING OF THE PICKER — NOT A SCREENSHOT</text>
   <rect x="70" y="48" width="500" height="304" rx="6" fill="#252b39"
         stroke="#3a4356"/>
-  <text x="90" y="78" font-size="15" fill="#d6dbe5">Ada 83: scenario
+  <text x="90" y="78" font-size="15" fill="#d6dbe5">TurboAda: scenario
     variables</text>
   <rect x="90" y="92" width="460" height="30" rx="3" fill="#1a1f2a"
         stroke="#3a4356"/>
@@ -5417,7 +5639,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
 </svg>
 </script>
 
-<script id="ada83-icon-folder-open.svg" type="image/svg+xml">
+<script id="turboada-icon-folder-open.svg" type="image/svg+xml">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
   <path d="M1.5 12.5v-9h4.2l1.6 2h6.2v2" fill="none" stroke="#808080"/>
   <path d="M1.5 12.5l2-5h11l-2 5z" fill="none" stroke="#808080"/>
@@ -5430,10 +5652,10 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011"
     xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
   <Metadata>
-    <Identity Language="en-US" Id="ada83" Version="1.0.0" Publisher="ada83" />
+    <Identity Language="en-US" Id="turboada" Version="1.1.0" Publisher="turboada" />
     <DisplayName>Ada 83</DisplayName>
-    <Description xml:space="preserve">Ada 83 (ANSI/MIL-STD-1815A) language support, powered by the ada83 compiler. Diagnostics, go to definition, hover, outline, completion, signature help, folding, quick fixes, and .gpr / .gpj project files with their scenario variables.</Description>
-    <Tags>ada,ada83,mil-std-1815a</Tags>
+    <Description xml:space="preserve">Ada 83 (ANSI/MIL-STD-1815A) development environment, powered by the TurboAda compiler. Diagnostics, go to definition, hover, outline, completion, signature help, folding, quick fixes, and .gpr / .gpj project files with their scenario variables.</Description>
+    <Tags>ada,turboada,mil-std-1815a</Tags>
     <Categories>Programming Languages,Linters,Debuggers</Categories>
     <GalleryFlags>Public</GalleryFlags>
     <Properties>
@@ -5449,7 +5671,7 @@ tool (`#ada83Manual`) instead of recalling modern Ada.
     <Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true" />
     <Asset Type="Microsoft.VisualStudio.Services.Content.Details" Path="extension/README.md" Addressable="true" />
     <Asset Type="Microsoft.VisualStudio.Services.Content.Changelog" Path="extension/CHANGELOG.md" Addressable="true" />
-    <Asset Type="Microsoft.VisualStudio.Services.Icons.Default" Path="extension/ada83-icon.png" Addressable="true" />
+    <Asset Type="Microsoft.VisualStudio.Services.Icons.Default" Path="extension/turboada-icon.png" Addressable="true" />
   </Assets>
 </PackageManifest>
 </script>

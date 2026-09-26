@@ -78,7 +78,7 @@ end resourceCompilerFor
 
 on resourceObjectFor(chosenPlatform)
 	if resourceCompilerFor(chosenPlatform) is "" then return ""
-	return "staging/ada83-icon.o"
+	return "staging/turboada-icon.o"
 end resourceObjectFor
 
 on binaryFolderFor(chosenPlatform)
@@ -86,18 +86,18 @@ on binaryFolderFor(chosenPlatform)
 end binaryFolderFor
 
 on executableFor(chosenPlatform)
-	if chosenPlatform is windowsPlatform() then return "ada83.exe"
+	if chosenPlatform is windowsPlatform() then return "ta.exe"
 	return "ada83"
 end executableFor
 
 on artworkFor(chosenPlatform)
-	if chosenPlatform is linuxPlatform() then return "ada83-icon.png"
-	if chosenPlatform is macosPlatform() then return "ada83-icon.icns"
-	return "ada83-icon.ico"
+	if chosenPlatform is linuxPlatform() then return "turboada-icon.png"
+	if chosenPlatform is macosPlatform() then return "turboada-icon.icns"
+	return "turboada-icon.ico"
 end artworkFor
 
 on iconSourceFor()
-	return "ada83-icon.png"
+	return "turboada-icon.png"
 end iconSourceFor
 
 on iconChunkFor(pixelWidth)
@@ -150,12 +150,12 @@ on buildIcons(directory, chosenPlatform)
 
 	if chosenPlatform is linuxPlatform() then
 		do shell script "cp " & quoted form of sourcePath & " " & ¬
-			quoted form of (stagePath & "/ada83-icon.png")
+			quoted form of (stagePath & "/turboada-icon.png")
 		return
 	end if
 
 	if chosenPlatform is windowsPlatform() then
-		set fileHandle to openForWriting(stagePath & "/ada83-icon.ico")
+		set fileHandle to openForWriting(stagePath & "/turboada-icon.ico")
 		try
 			writeBigShort(fileHandle, 0)
 			writeBigShort(fileHandle, 256)
@@ -172,7 +172,7 @@ on buildIcons(directory, chosenPlatform)
 		return
 	end if
 
-	set icnsPath to stagePath & "/ada83-icon.icns"
+	set icnsPath to stagePath & "/turboada-icon.icns"
 	set fileHandle to openForWriting(icnsPath)
 	try
 		write "icns" to fileHandle
@@ -224,7 +224,7 @@ on buildIcons(directory, chosenPlatform)
 end buildIcons
 
 on launcherFor(chosenPlatform)
-	if chosenPlatform is linuxPlatform() then return "ada83.desktop"
+	if chosenPlatform is linuxPlatform() then return "turboada.desktop"
 	return ""
 end launcherFor
 
@@ -388,7 +388,7 @@ on extensionSplitLines()
 		"                  out = (name ~ /^(extension.vsixmanifest|\\[)/) \\", ¬
 		"                        ? \"staging/vsix/\" name \\", ¬
 		"                        : \"staging/vsix/extension/\" name; next } \\", ¬
-		"     out != \"\" { print > out }' ada83-extension.html"}
+		"     out != \"\" { print > out }' turboada-extension.html"}
 end extensionSplitLines
 
 on extensionSteps(chosenPlatform)
@@ -396,14 +396,14 @@ on extensionSteps(chosenPlatform)
 	return {"command -v zip >/dev/null || { echo 'zip is needed to package'; exit 1; }", ¬
 		"rm -rf staging/vsix", ¬
 		"mkdir -p staging/vsix/extension/syntaxes " & binFolder, ¬
-		"cp ada83-icon.png staging/vsix/extension/", ¬
-		"if [ -f ada83-manual.md ]; then", ¬
-		"  cp ada83-manual.md staging/vsix/extension/", ¬
+		"cp turboada-icon.png staging/vsix/extension/", ¬
+		"if [ -f turboada-manual.md ]; then", ¬
+		"  cp turboada-manual.md staging/vsix/extension/", ¬
 		"else", ¬
-		"  echo 'ada83-manual.md is missing; packaging without the manual search tool'", ¬
+		"  echo 'turboada-manual.md is missing; packaging without the manual search tool'", ¬
 		"fi"} & extensionSplitLines() & ¬
-		{"rm -f " & binFolder & "/ada83.vsix", ¬
-		"( cd staging/vsix && zip -qr ../../" & binFolder & "/ada83.vsix . )", ¬
+		{"rm -f " & binFolder & "/turboada.vsix", ¬
+		"( cd staging/vsix && zip -qr ../../" & binFolder & "/turboada.vsix . )", ¬
 		"rm -rf staging/vsix"}
 end extensionSteps
 
@@ -411,7 +411,7 @@ on compileCommand(chosenPlatform, architectureFlag, outputPath)
 	set resourceObject to resourceObjectFor(chosenPlatform)
 	if resourceObject is not "" then set resourceObject to " " & resourceObject
 	return compilerFor(chosenPlatform) & " " & compilerFlagsFor(chosenPlatform) & architectureFlag & ¬
-		" -o " & outputPath & " ada83.c" & resourceObject & " " & linkLibrariesFor(chosenPlatform)
+		" -o " & outputPath & " turboada.c" & resourceObject & " " & linkLibrariesFor(chosenPlatform)
 end compileCommand
 
 on compileSteps(chosenPlatform)
@@ -459,7 +459,7 @@ end resourceObjectSteps
 on launcherSteps(chosenPlatform)
 	if launcherFor(chosenPlatform) is "" then return {}
 	return {"printf '%s\\n' '[Desktop Entry]' 'Type=Application' 'Name=Ada 83' 'Comment=Ada 83 compiler' " & ¬
-		"'Exec=ada83 %F' 'Icon=ada83-icon' 'Terminal=true' 'Categories=Development;Building;' > " & ¬
+		"'Exec=ada83 %F' 'Icon=turboada-icon' 'Terminal=true' 'Categories=Development;Building;' > " & ¬
 		binaryFolderFor(chosenPlatform) & "/" & launcherFor(chosenPlatform)}
 end launcherSteps
 
@@ -472,8 +472,8 @@ end sharedLibrarySteps
 on buildProgram()
 	set binaryPath to binaryFolderFor(macosPlatform()) & "/ada83"
 	return guardedProgram({"mkdir -p " & binaryFolderFor(macosPlatform()), ¬
-		"gcc -O3 -Wall -std=gnu2x -o " & binaryPath & " ada83.c -lpthread", ¬
-		"test -f ada83-runtime.ada || echo 'ada83-runtime.ada is not here; ada83 needs it beside the executable.'", ¬
+		"gcc -O3 -Wall -std=gnu2x -o " & binaryPath & " turboada.c -lpthread", ¬
+		"test -f turboada-runtime.ada || echo 'turboada-runtime.ada is not here; ada83 needs it beside the executable.'", ¬
 		"echo", ¬
 		"echo 'Built " & binaryPath & ".'", ¬
 		"echo 'Compile a program with:  ./" & binaryPath & " myprogram.ada -o myprogram'"}, ¬
@@ -481,7 +481,7 @@ on buildProgram()
 end buildProgram
 
 on vsixProgram(chosenPlatform)
-	set vsixPath to binaryFolderFor(chosenPlatform) & "/ada83.vsix"
+	set vsixPath to binaryFolderFor(chosenPlatform) & "/turboada.vsix"
 	return guardedProgram(extensionSteps(chosenPlatform) & ¬
 		{"echo 'Built " & vsixPath & ":'", ¬
 		"unzip -l " & vsixPath & " | tail -n +4"}, ¬
@@ -493,7 +493,7 @@ on packageProgram(chosenPlatform)
 	return guardedProgram(extensionSteps(chosenPlatform) & sharedLibraryGuardSteps(chosenPlatform) & ¬
 		sliceGuardSteps(chosenPlatform) & resourceObjectSteps(chosenPlatform) & ¬
 		chosenRouteSteps(chosenPlatform) & compileSteps(chosenPlatform) & ¬
-		{"cp ada83-runtime.ada " & binFolder & "/"} & launcherSteps(chosenPlatform) & ¬
+		{"cp turboada-runtime.ada " & binFolder & "/"} & launcherSteps(chosenPlatform) & ¬
 		sharedLibrarySteps(chosenPlatform) & ¬
 		{"rm -rf staging", ¬
 		"echo 'Packaged " & binFolder & ":'", ¬
@@ -514,15 +514,15 @@ on run argv
 		set chosenPlatform to macosPlatform()
 		if chosenAction is "package" then set chosenPlatform to requestedPlatform(argv)
 		if chosenAction is not "vsix" then
-			requireFile(directory, "ada83.c")
+			requireFile(directory, "turboada.c")
 		end if
 		if chosenAction is "package" then
-			requireFile(directory, "ada83-runtime.ada")
+			requireFile(directory, "turboada-runtime.ada")
 			requireFile(directory, iconSourceFor())
 		end if
 		if chosenAction is not "build" then
-			requireFile(directory, "ada83-extension.html")
-			requireFile(directory, "ada83-icon.png")
+			requireFile(directory, "turboada-extension.html")
+			requireFile(directory, "turboada-icon.png")
 		end if
 		if chosenAction is "package" then
 			requireToolchain(chosenPlatform)

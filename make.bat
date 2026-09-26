@@ -2,12 +2,12 @@
 setlocal
 cd /d "%~dp0"
 
-set "SOURCE=ada83.c"
-set "RUNTIME=ada83-runtime.ada"
-set "BUNDLE=ada83-extension.html"
-set "MANUAL=ada83-manual.md"
-set "VSIX=ada83.vsix"
-set "ICON=ada83-icon"
+set "SOURCE=turboada.c"
+set "RUNTIME=turboada-runtime.ada"
+set "BUNDLE=turboada-extension.html"
+set "MANUAL=turboada-manual.md"
+set "VSIX=turboada.vsix"
+set "ICON=turboada-icon"
 set "LIBRARIES=bin-libraries.zip"
 set "STAGE=bin-windows"
 set "ZIG_VERSION=0.16.0"
@@ -17,7 +17,7 @@ set "ZIG_URL=https://ziglang.org/download/%ZIG_VERSION%/%ZIG_NAME%.zip"
 set "TOOLCHAIN_windows=GCC, Clang or Zig"
 set "TOOLCHAIN_linux=Zig"
 set "TOOLCHAIN_macos=Zig and llvm-lipo"
-set "EXECUTABLE_windows=ada83.exe"
+set "EXECUTABLE_windows=ta.exe"
 set "EXECUTABLE_linux=ada83"
 set "EXECUTABLE_macos=ada83"
 set "COMPILER_FLAGS_windows=-O2 -Wall -g0 -std=gnu2x"
@@ -32,7 +32,7 @@ set "ARTWORK_macos=%ICON%.icns"
 set "ICON_SOURCE=%ICON%.png"
 set "ARCHITECTURES_linux=x86_64-linux-gnu.2.34"
 set "ARCHITECTURES_macos=aarch64-macos x86_64-macos"
-set "LAUNCHER_linux=ada83.desktop"
+set "LAUNCHER_linux=turboada.desktop"
 set "SHARED_LIBRARIES_windows=*.dll"
 
 call :dispatch %1 %2
@@ -273,7 +273,7 @@ call :require %BUNDLE% || exit /b 1
 del /q "%STAGE%\%VSIX%" >nul 2>nul
 rmdir /s /q staging\vsix >nul 2>nul
 mkdir staging\vsix\extension\syntaxes
-for %%F in ("%MANUAL%" "%ICON%.png") do (
+for %%F in ("%MANUAL%" "%ICON%.png" "turboada-logo.png") do (
     if exist %%F ( copy /y %%F staging\vsix\extension\ >nul ) else (
         echo %%~F is missing; building %VSIX% without it.
     )
@@ -353,7 +353,7 @@ set "TOOLCHAIN=Clang"
 set "COMPILER=clang --target=x86_64-w64-windows-gnu"
 where clang >nul 2>nul && goto build
 rem  clang-cl builds the native MSVC target (SEH, MSVC CRT), which cl.exe
-rem  cannot because ada83.c uses __int128.  It needs a Windows SDK on
+rem  cannot because turboada.c uses __int128.  It needs a Windows SDK on
 rem  INCLUDE/LIB, as a Visual Studio developer prompt provides; try it before
 rem  downloading Zig, and fall through to Zig if it or its link fails.
 where clang-cl >nul 2>nul && (call :compile_msvc && exit /b 0)
@@ -362,12 +362,12 @@ set "TOOLCHAIN=Zig"
 set "COMPILER=%ZIG% cc -target x86_64-windows-gnu"
 :build
 call :resource
-echo   compiling ada83.c with %TOOLCHAIN%
+echo   compiling turboada.c with %TOOLCHAIN%
 %COMPILER% %COMPILER_FLAGS% %SOURCE% %RESOURCE% -o "%STAGE%\%EXECUTABLE%" %LINK_LIBRARIES%
 exit /b %errorlevel%
 
 :compile_msvc
-rem  compiler-rt carries the __int128 helpers (__divti3 and friends) ada83.c
+rem  compiler-rt carries the __int128 helpers (__divti3 and friends) turboada.c
 rem  needs and the MSVC CRT lacks; the exe links beside the LLVM DLLs already
 rem  unpacked into %STAGE%, so it loads the bundled libLLVM at run time.
 set "RESDIR="
@@ -376,7 +376,7 @@ if not defined RESDIR exit /b 1
 set "BUILTINS=%RESDIR%\lib\windows\clang_rt.builtins-x86_64.lib"
 if not exist "%BUILTINS%" exit /b 1
 call :resource
-echo   compiling ada83.c with clang-cl (native MSVC)
+echo   compiling turboada.c with clang-cl (native MSVC)
 clang-cl /nologo /O2 /clang:-std=gnu2x -fuse-ld=lld /Fe:"%STAGE%\%EXECUTABLE%" ^
     %SOURCE% %RESOURCE% synchronization.lib "%BUILTINS%"
 set "RC=%errorlevel%"
@@ -417,9 +417,24 @@ if /i not "%REPLY%"=="y" (
     echo Install MinGW-w64 GCC, Clang or Zig and run this again.
     exit /b 1
 )
-powershell -NoProfile -Command ^
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "$ErrorActionPreference='Stop';" ^
-    "Invoke-WebRequest '%ZIG_URL%' -OutFile 'zig.zip';" ^
+    "try{[Console]::OutputEncoding=[Text.Encoding]::UTF8}catch{};" ^
+    "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;" ^
+    "$ProgressPreference='SilentlyContinue';" ^
+    "$w=32; $fc=[char]0x2588; $ec=[char]0x00B7;" ^
+    "$blk=[char[]](0x258F,0x258E,0x258D,0x258C,0x258B,0x258A,0x2589);" ^
+    "$rq=[Net.WebRequest]::Create('%ZIG_URL%'); $rs=$rq.GetResponse();" ^
+    "$tot=[Math]::Max(1,$rs.ContentLength); $st=$rs.GetResponseStream();" ^
+    "$fo=[IO.File]::Create('zig.zip'); $bf=New-Object byte[] 65536; $so=0; $last=-1;" ^
+    "while(($n=$st.Read($bf,0,$bf.Length)) -gt 0){" ^
+    "  $fo.Write($bf,0,$n); $so+=$n; $p=[int]($so*100/$tot);" ^
+    "  if($p -ne $last){ $last=$p; $f=($so/$tot)*$w; $fu=[Math]::Floor($f);" ^
+    "    $b=[string]$fc*$fu; $fr=$f-$fu;" ^
+    "    if($fu -lt $w -and $fr -gt 0){$b+=$blk[[Math]::Min(6,[int]($fr*8))];$fu++};" ^
+    "    $b+=[string]$ec*($w-$fu);" ^
+    "    Write-Host -NoNewline ([char]13 + '  ' + $b + (' {0,3:0}%%' -f $p)) } };" ^
+    "$fo.Close(); $st.Close(); $rs.Close(); Write-Host '';" ^
     "Expand-Archive 'zig.zip' '.' -Force;" ^
     "Move-Item '%ZIG_NAME%' 'zig' -Force;" ^
     "Remove-Item 'zig.zip'"

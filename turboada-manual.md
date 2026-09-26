@@ -7093,6 +7093,26 @@ deferred_constant_declaration ::=
    identifier_list : constant type_mark;
 ```
 
+> **Extension — private extensions (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> A private type declaration may say what the type extends:
+>
+> ```ebnf
+> private_extension_declaration ::=
+>    type identifier [discriminant_part] is new subtype_mark with private;
+> ```
+>
+> The partial view is a private type, as `is private` gives; the full
+> declaration in the private part must be a record extension of the same
+> parent, which the compiler checks. The parent must be a record type, and
+> a record extension part is itself allowed only on a controlled parent (see
+> [3.4](#34-derived-types)).
+
 A private type declaration is only allowed as a declarative item of the visible
 part of a package, or as the generic parameter declaration for a generic formal
 type in a generic formal part.
@@ -8902,6 +8922,28 @@ The simple expression must be of the predefined fixed point type Duration; its
 value is expressed in seconds; a delay statement with a negative value is
 equivalent to a delay statement with a zero value.
 
+> **Extension — delay until (off under `-ada83`).**
+>
+> This paragraph describes a language extension. It is admitted by
+> default but is not part of ANSI/MIL-STD-1815A, and is rejected when the
+> compiler is invoked with `-ada83`; a program that relies on it is not a
+> legal Ada 83 program.
+>
+> A delay statement may name a point in time rather than a span:
+>
+> ```ebnf
+> delay_statement ::= delay [until] simple_expression;
+> ```
+>
+> With `until`, the expression is of a time type — CALENDAR.TIME, or any
+> fixed point type derived from Duration — and the task is suspended until
+> that point arrives; a point already past is no wait at all. The form is
+> allowed wherever a delay statement is, the delay alternative of a
+> selective wait and of a timed entry call included. `UNTIL` is not a
+> reserved word: it opens this form only directly after `delay` and only
+> where an expression follows it, so an object called `Until` stays an
+> object and `delay Until;` still waits for its value.
+
 Any implementation of the type Duration must allow representation of durations
 (both positive and negative) up to at least 86400 seconds (one day); the
 smallest representable duration, Duration'Small must not be greater than twenty
@@ -9518,12 +9560,45 @@ implemented as an indivisible operation.
 > every call queued on it with Program_Error, and every later call on that
 > object raises Program_Error at once.
 >
-> **What is not supported.** `requeue`, protected procedures as interrupt
+> **Timed and conditional calls.** A call of a protected entry may be the
+> entry call a `select` statement begins with, in both its forms. The call
+> is queued as an ordinary one, so the service pass the queueing starts
+> runs it when its barrier is open; what differs is what happens when that
+> pass leaves it queued. The conditional form withdraws it at once and
+> takes the `else` part; the timed form withdraws it at the deadline and
+> takes the delay alternative. Withdrawal retakes the object's lock, so a
+> body already running for the call has completed it by then and the call
+> counts as accepted.
+>
+> **Contracts.** `Pre` may be given on an entry. It is evaluated where the
+> call is made, with the actual parameters, before the call is queued —
+> the place RM 6.1.1 puts a subprogram's, and the only place an entry's
+> can be evaluated at all, since a barrier cannot name the entry's formals.
+> `Post` on an entry is rejected.
+>
+> **pragma Atomic** may name a protected type or a protected object. Every
+> read and every update of the object's state happens inside a protected
+> action, under the object's own lock, so the pragma is satisfied already
+> and is accepted with nothing added; the width limit that governs an
+> ordinary atomic object does not apply.
+>
+> **Requeue.** A `requeue` statement in an entry body takes the call out of
+> the body running it and puts it back on the object's queue under the entry
+> it names, still within the same protected action; the call is not complete,
+> so the service loop offers it to the new entry's barrier and the caller
+> returns only when that entry has run. This implementation requeues only to
+> a single entry of the protected unit the statement appears in, named on its
+> own, and only where neither entry has parameters; `with abort` is accepted
+> and has no further effect. A requeue out of an accept statement is
+> rejected.
+>
+> **What is not supported.** Protected procedures as interrupt
 > handlers (`pragma Attach_Handler`, `pragma Interrupt_Handler`), priority
 > ceiling locking (`pragma Locking_Policy`), protected interfaces and
-> tagged, synchronized or dispatching protected operations. A timed or
-> conditional call of a protected entry — a protected entry call as the
-> triggering statement of a `select` — is rejected. A protected unit is not
+> tagged, synchronized or dispatching protected operations. An
+> access-to-protected-subprogram type is rejected, as is a protected entry
+> call as the triggering statement of an asynchronous `select ... then
+> abort`. A protected unit is not
 > a library unit; it is declared within another unit, and its body belongs
 > to the same declarative part as its declaration, after every basic
 > declaration of that part.
@@ -24748,9 +24823,9 @@ as `Skip_Comments => False`.
 
 **Use `others` when remaining aggregate components take their defaults.**
 
-Use `others => <>` in Ada 2005 or later. Ada 83 requires an explicit value for
-every component. Supply the remaining values by name, use a valid
-`others => Value` choice where possible, or initialize the object and assign
+`others => <>` is admitted by default, and under `-ada83` it is an error: a
+strict program supplies the remaining values by name, uses a valid
+`others => Value` choice where possible, or initializes the object and assigns
 components separately.
 
 **Lay out a long aggregate one association per line.**
