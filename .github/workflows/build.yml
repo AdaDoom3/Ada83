@@ -49,7 +49,7 @@ jobs:
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
 
       # release: false reuses the MSYS2 already on the image. clang and lld are
-      # the C driver ada83 links finished programs with: it emits thread-local
+      # the C driver turboada links finished programs with: it emits thread-local
       # storage as COFF weak externals, which GNU ld cannot resolve, so gcc
       # fails every link with "relocation truncated to fit" against __ss_first
       # and friends. unzip is not in base-devel.
@@ -70,14 +70,14 @@ jobs:
       - name: Build (Linux/macOS)
         if: inputs.platform != 'windows'
         shell: bash
-        run: make ada83
+        run: make turboada
 
       - name: Build (Windows)
         if: inputs.platform == 'windows'
         shell: cmd
         run: make.bat
 
-      # ada83 looks for turboada-runtime.ada beside its own executable; the make
+      # turboada looks for turboada-runtime.ada beside its own executable; the make
       # targets leave the binary in bin-<platform>/ and the runtime at the root.
       - name: Place the runtime beside the compiler
         shell: bash
