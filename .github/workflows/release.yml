@@ -79,7 +79,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # The runners carry no LLVM. ada83 dlopens libLLVM to emit native code,
+      # The runners carry no LLVM. ta dlopens libLLVM to emit native code,
       # so without it the packaged compiler cannot get past --ir.
       - name: Install the toolchain (Linux)
         if: matrix.platform == 'linux'
@@ -170,18 +170,18 @@ jobs:
           chmod +x "$compiler" 2>/dev/null || true
 
           "$compiler" --version
-          "$compiler" --version | grep -qxF "ada83 $VERSION"
+          "$compiler" --version | grep -qxF "ta $VERSION"
 
           printf '%s\n' \
             'WITH TEXT_IO;' \
             'PROCEDURE HELLO IS' \
             'BEGIN' \
-            '   TEXT_IO.PUT_LINE ("packaged ada83 works");' \
+            '   TEXT_IO.PUT_LINE ("packaged TurboAda works");' \
             'END HELLO;' > hello.adb
           "$compiler" hello.adb -o hello
           program=./hello
           [[ -x $program ]] || program=./hello.exe
-          "$program" | grep -qx "packaged ada83 works"
+          "$program" | grep -qx "packaged TurboAda works"
 
       # A universal binary missing a slice still runs on the machine that built
       # it, so the only way to catch that is to ask.
@@ -190,7 +190,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          archs=$(lipo -archs verify/ada83)
+          archs=$(lipo -archs verify/ta)
           echo "slices: $archs"
           for want in arm64 x86_64; do
             grep -qw "$want" <<<"$archs" \
