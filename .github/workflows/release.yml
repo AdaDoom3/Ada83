@@ -1,8 +1,8 @@
 name: Release
 
 # A release is cut by pushing a tag on main; nothing publishes on ordinary
-# pushes. Versioning is classic two-part (0.9, 1.0, 1.1), and ada83.c holds the
-# number in ADA83_VERSION_MAJOR / _MINOR, read by .github/version.sh.
+# pushes. Versioning is classic two-part (0.9, 1.0, 1.1), and turboada.c holds the
+# number in TURBOADA_VERSION_MAJOR / _MINOR, read by .github/version.sh.
 
 on:
   push:
@@ -23,7 +23,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Read the version out of ada83.c
+      - name: Read the version out of turboada.c
         id: version
         shell: bash
         run: echo "version=$(./.github/version.sh)" >> "$GITHUB_OUTPUT"
@@ -31,7 +31,7 @@ jobs:
       # Only a tag push can publish, so only a tag push has to pass the gate.
       # A manual run is a dry run off a branch: it builds and checks the
       # archives, and stops before `publish`.
-      - name: Tag must match ada83.c, sit on main, and be unreleased
+      - name: Tag must match turboada.c, sit on main, and be unreleased
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -42,7 +42,7 @@ jobs:
           source_version="${{ steps.version.outputs.version }}"
 
           if [[ $tag_name != "v$source_version" ]]; then
-            echo "::error file=ada83.c::tag $tag_name does not match the compiled version v$source_version. Retag, or fix ADA83_VERSION_MAJOR/_MINOR."
+            echo "::error file=turboada.c::tag $tag_name does not match the compiled version v$source_version. Retag, or fix TURBOADA_VERSION_MAJOR/_MINOR."
             exit 1
           fi
 
@@ -164,8 +164,8 @@ jobs:
           cd verify
 
           case "${{ matrix.platform }}" in
-            windows) compiler=./ada83.exe ;;
-            *)       compiler=./ada83 ;;
+            windows) compiler=./ta.exe ;;
+            *)       compiler=./ta ;;
           esac
           chmod +x "$compiler" 2>/dev/null || true
 
@@ -197,7 +197,7 @@ jobs:
               || { echo "::error::bin-macos.zip is missing the $want slice (has: $archs)"; exit 1; }
           done
 
-      # ada83.exe loads LLVM-C.dll at run time; without it the archive is inert
+      # ta.exe loads LLVM-C.dll at run time; without it the archive is inert
       # on any machine that does not already have LLVM.
       - name: Check the Windows archive carries its DLLs
         if: matrix.platform == 'windows'

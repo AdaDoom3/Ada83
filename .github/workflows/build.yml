@@ -77,16 +77,16 @@ jobs:
         shell: cmd
         run: make.bat
 
-      # ada83 looks for ada83-runtime.ada beside its own executable; the make
+      # ada83 looks for turboada-runtime.ada beside its own executable; the make
       # targets leave the binary in bin-<platform>/ and the runtime at the root.
       - name: Place the runtime beside the compiler
         shell: bash
         run: |
           set -euo pipefail
           if [[ "${{ inputs.platform }}" == windows ]]; then
-            cp ada83-runtime.ada bin-windows/
+            cp turboada-runtime.ada bin-windows/
           else
-            cp ada83-runtime.ada bin-${{ inputs.platform }}/
+            cp turboada-runtime.ada bin-${{ inputs.platform }}/
           fi
 
       - name: Run ACATS (Linux/macOS)

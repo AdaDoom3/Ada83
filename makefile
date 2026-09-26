@@ -1,6 +1,6 @@
 CC     = gcc
 CFLAGS = -O3 -Wall -std=gnu2x
-# ada83.c only touches pthread on the non-Windows branch; Windows uses
+# turboada.c only touches pthread on the non-Windows branch; Windows uses
 # CreateThread and needs no thread library. Some toolchains (e.g. GNAT's
 # mingw gcc) ship no libpthread at all, so probe for it rather than assume:
 # keep -lpthread only when a trivial program links against it, and drop it
@@ -34,11 +34,11 @@ LINUX_CROSS_COMPILER := $(or \
   $(if $(call Found,podman),$(subst docker,podman,$(CONTAINED_GCC))), \
   x86_64-linux-gnu-gcc)
 
-RUNTIME     = ada83-runtime.ada
-MANUAL      = ada83-manual.md
-VSIX        = ada83.vsix
-BUNDLE      = ada83-extension.html
-ICON        = ada83-icon
+RUNTIME     = turboada-runtime.ada
+MANUAL      = turboada-manual.md
+VSIX        = turboada.vsix
+BUNDLE      = turboada-extension.html
+ICON        = turboada-icon
 ICON_SOURCE = $(ICON).png
 
 ICON_WRITER = \
@@ -79,7 +79,7 @@ ICON_RSRC = Icns=`wc -c < $(BIN_DIR)/$(ICON).icns`; Data=$$((Icns + 4)); \
 
 Slice_Path       = $(if $1,staging/$(EXECUTABLE)-$1,$(BIN_DIR)/$(EXECUTABLE))
 Compile_Slice    = $(COMPILER) $(COMPILER_FLAGS) $(if $1,-arch $1) \
-                   -o $(call Slice_Path,$1) ada83.c $(RESOURCE_OBJECT) \
+                   -o $(call Slice_Path,$1) turboada.c $(RESOURCE_OBJECT) \
                    $(LINK_LIBRARIES)
 SLICES           = $(foreach Architecture,$(ARCHITECTURES),\
                      $(call Slice_Path,$(Architecture)))
@@ -127,7 +127,7 @@ ICON_BUILD_macos          = $(ICON_ICNS) > $(BIN_DIR)/$(ICON).icns; \
                             mkdir -p $(BIN_DIR)/__MACOSX; \
                             $(ICON_RSRC) > $(BIN_DIR)/__MACOSX/._$(EXECUTABLE)
 ICON_BUILD_windows        = $(ICON_ICO) > $(BIN_DIR)/$(ICON).ico
-LAUNCHER_linux            = ada83.desktop
+LAUNCHER_linux            = turboada.desktop
 RESOURCE_COMPILER_windows = x86_64-w64-mingw32-windres
 SHARED_LIBRARIES_windows  = *.dll
 
@@ -143,8 +143,8 @@ COMPILER_FLAGS += $(if $(CROSS),,$(WHOLE_PROGRAM))
 BIN_DIR          = bin-$(TARGET)
 BIN_DIRS         = bin-linux bin-macos bin-windows
 LIBRARY_SOURCE   = bin-libraries.zip
-EXECUTABLE       = ada83$(SUFFIX)
-HOST_BINARY      = bin-$(HOST_TARGET)/ada83
+EXECUTABLE       = ta$(SUFFIX)
+HOST_BINARY      = bin-$(HOST_TARGET)/ta
 HOST_RUNTIME     = bin-$(HOST_TARGET)/$(RUNTIME)
 RESOURCE_OBJECT  = $(if $(RESOURCE_COMPILER),staging/$(ICON).o)
 
@@ -152,13 +152,13 @@ LIPO := $(shell command -v lipo || command -v llvm-lipo || \
                 command -v "$$(llvm-config --bindir 2>/dev/null)/llvm-lipo")
 SUDO := $(shell [ $$(id -u) -eq 0 ] || echo sudo)
 
-all: ada83 provision-llvm
+all: ta provision-llvm
 
-ada83: $(HOST_BINARY) $(HOST_RUNTIME)
+ta: $(HOST_BINARY) $(HOST_RUNTIME)
 
-$(HOST_BINARY): ada83.c
+$(HOST_BINARY): turboada.c
 	@mkdir -p $(@D)
-	@$(call STAGE,compiling ada83.c with $(CC))
+	@$(call STAGE,compiling turboada.c with $(CC))
 	$(CC) $(CFLAGS) $(WHOLE_PROGRAM) $(TUNE) -o $@ $< $(LIBS)
 	@echo "Built $@."
 
@@ -181,7 +181,7 @@ provision-llvm:
 # compiler, the runtime, the extension, the platform artwork, and — on
 # Windows — the vendored DLLs unpacked from bin-libraries.zip, which holds
 # nothing else. The release workflow zips the folder itself.
-package: ada83.c $(RUNTIME) $(ICON_SOURCE) $(BIN_DIR)/$(VSIX)
+package: turboada.c $(RUNTIME) $(ICON_SOURCE) $(BIN_DIR)/$(VSIX)
 	@command -v $(firstword $(COMPILER)) >/dev/null || { \
 	  echo "packaging for $(TARGET) needs $(firstword $(COMPILER))"; exit 1; }
 	@test -z "$(SHARED_LIBRARIES)" || test -f $(LIBRARY_SOURCE) || { \
@@ -195,11 +195,11 @@ package: ada83.c $(RUNTIME) $(ICON_SOURCE) $(BIN_DIR)/$(VSIX)
 	@test -z "$(RESOURCE_OBJECT)" || { set -x; \
 	  echo '1 ICON "$(abspath $(BIN_DIR)/$(ICON).ico)"' \
 	    | $(RESOURCE_COMPILER) -O coff -o $(RESOURCE_OBJECT); }
-	@$(call STAGE,compiling ada83.c for $(TARGET))
+	@$(call STAGE,compiling turboada.c for $(TARGET))
 	$(BUILD_EXECUTABLE)
 	cp $(RUNTIME) $(BIN_DIR)/
 	test -z "$(LAUNCHER)" || printf '%s\n' '[Desktop Entry]' 'Type=Application' \
-	  'Name=Ada 83' 'Comment=Ada 83 compiler' 'Exec=ada83 %F' 'Icon=$(ICON)' \
+	  'Name=TurboAda' 'Comment=TurboAda compiler' 'Exec=ta %F' 'Icon=$(ICON)' \
 	  'Terminal=true' 'Categories=Development;Building;' > $(BIN_DIR)/$(LAUNCHER)
 	test -z "$(SHARED_LIBRARIES)" || \
 	  unzip -qoj $(LIBRARY_SOURCE) '$(SHARED_LIBRARIES)' -d $(BIN_DIR)
@@ -213,6 +213,9 @@ $(BIN_DIR)/$(VSIX): $(BUNDLE) $(ICON).png $(wildcard $(MANUAL))
 	@mkdir -p $(BIN_DIR)
 	rm -rf staging/vsix && mkdir -p staging/vsix/extension/syntaxes
 	cp $(ICON).png staging/vsix/extension/
+	@test -f turboada-logo.png \
+	  && cp turboada-logo.png staging/vsix/extension/ \
+	  || echo "turboada-logo.png is missing; the README logo won't render"
 	@test -f $(MANUAL) && cp $(MANUAL) staging/vsix/extension/ \
 	  || echo "$(MANUAL) is missing; packaging without the manual search tool"
 	@$(call STAGE,splitting $(BUNDLE))
@@ -235,10 +238,10 @@ $(BIN_DIR)/$(VSIX): $(BUNDLE) $(ICON).png $(wildcard $(MANUAL))
 	rm -rf staging/vsix
 
 clean: clean-test
-	rm -f ada83 ada83.exe $(VSIX)
+	rm -f ta ta.exe $(VSIX)
 	rm -rf staging $(BIN_DIRS)
 
 clean-test:
 	rm -rf test_results acats_logs acats/report.ll
 
-.PHONY: all ada83 package vsix provision-llvm clean clean-test
+.PHONY: all ta package vsix provision-llvm clean clean-test

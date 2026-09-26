@@ -1,17 +1,20 @@
-# ~~Ada83~~ TurboAda
+# TurboAda
 
 [![Linux](https://github.com/AdaDoom3/Ada83/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/AdaDoom3/Ada83/actions/workflows/ci-linux.yml)
 [![macOS](https://github.com/AdaDoom3/Ada83/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/AdaDoom3/Ada83/actions/workflows/ci-macos.yml)
 [![Windows](https://github.com/AdaDoom3/Ada83/actions/workflows/ci-windows.yml/badge.svg)](https://github.com/AdaDoom3/Ada83/actions/workflows/ci-windows.yml)
 
-A single-file Ada LLVM compiler with a custom language subset.
+<p align="center">
+  <img src="turboada-logo.png" alt="logo" width="300">
+</p>
+
 
 ![Demo program](readme-images/shot-mars-rover.png)
 
 | | |
 |---|---|
-| Compiler | `ada83.c`, 111k lines, no generated code, no third-party source |
-| Runtime | `ada83-runtime.ada`, 3k lines of Ada |
+| Compiler | `turboada.c`, 111k lines, no generated code, no third-party source |
+| Runtime | `turboada-runtime.ada`, 3k lines of Ada |
 | Language | all of MIL-STD-1815A: tasking, generics, fixed point, representation clauses |
 | Additional features | protected types, controlled types, child units, general and anonymous access, contracts and more; `-ada83` turns them off |
 | Conformance | 3561 / 3561, ACATS 1.11; 234 / 234 of the post-83 tests |
@@ -32,7 +35,7 @@ procedure Hello is
 ```
 
 ```
-$ ./ada83 hello.ada -o hello
+$ ./ta hello.ada -o hello
 Compiled 'hello.ada' -> 'hello.native.ll'
 Generated ALI file 'hello.native.ali'
 $ ./hello
@@ -42,10 +45,10 @@ Hello, Ada world!
 For the editor, install the extension that came in the same archive:
 
 ```sh
-code --install-extension ada83.vsix
+code --install-extension turboada.vsix
 ```
 
-It needs `ada83` on your PATH, or `ada83.compilerPath` set to where you
+It needs `ta` on your PATH, or `turboada.compilerPath` set to where you
 unpacked it.
 
 ## Building
@@ -56,13 +59,13 @@ unpacked it.
 | macOS    | `make.applescript` | Apple Clang; libLLVM via Homebrew |
 | Windows  | `make.bat` | GCC or Clang; offers to fetch Zig if neither is installed |
 
-Every script writes what it builds into `bin-<target>/` - `bin-linux/ada83`,
-`bin-macos/ada83`, `bin-windows\ada83.exe` with the DLLs it loads beside it.
+Every script writes what it builds into `bin-<target>/` - `bin-linux/ta`,
+`bin-macos/ta`, `bin-windows\ta.exe` with the DLLs it loads beside it.
 The DLLs are vendored in `bin-libraries.zip`, which holds nothing else; the
 release workflow zips each finished `bin-<target>/` into the archives it
 publishes.
 
-`ada83-runtime.ada` holds the standard library, and the compiler looks for it
+`turboada-runtime.ada` holds the standard library, and the compiler looks for it
 beside its own executable.
 
 | Platform | Command | Produces |
@@ -116,7 +119,7 @@ Note: Tagged types and dispatching are delibritaly excluded from the subset.
 Run time of the generated code at `-O2`, against GNAT 13.3.0 (GCC
 `13.3.0-6ubuntu2~24.04.1`), on Linux x86_64 with 4 cpus (Intel Xeon @ 2.80 GHz).
 
-| Program | Stresses | ada83 (s) | gnat (s) | Ratio | Result |
+| Program | Stresses | ta (s) | gnat (s) | Ratio | Result |
 |---------|----------|----------:|---------:|------:|-------:|
 | **exceptions** | raise, propagate, handle | `0.021 ± 0.000` | `3.518 ± 0.009` | `0.01` | **168× faster** |
 | **lu** | LU decomposition, float division | `0.062 ± 0.001` | `0.220 ± 0.002` | `0.28` | **3.5× faster** |
@@ -136,7 +139,7 @@ Run time of the generated code at `-O2`, against GNAT 13.3.0 (GCC
 
 ## VSCode Extension
 
-`ada83 --lsp` serves the Language Server Protocol on stdin and stdout, so
+`ta --lsp` serves the Language Server Protocol on stdin and stdout, so
 hovers, completions and diagnostics come from the same code that passes
 ACATS. The extension finds the compiler on your PATH - or fetches the
 latest release on its own.
@@ -158,10 +161,10 @@ that prints a line:
 
 ![New Project](readme-images/new-project.gif)
 
-Error messages can be read in another language. `ada83.language` picks one,
+Error messages can be read in another language. `turboada.language` picks one,
 and anything but English hands the message to the editor's model.
 
-| `ada83.language` | |
+| `turboada.language` | |
 | ---------------- | --- |
 | `en` | English, as the compiler writes it — no model, no request |
 | `es` | Spanish |
@@ -174,23 +177,23 @@ and anything but English hands the message to the editor's model.
 
 | Setting | |
 | ------- | --- |
-| `ada83.compilerPath` | Location of `ada83` and where `${workspaceFolder}` gets substituted |
-| `ada83.includePaths` | Directories for with-ed units |
-| `ada83.language` | Language error messages are read in |
-| `ada83.formatOnType` | Reindent each line as you type it |
-| `ada83.formatOnSave` | Reformat the whole file as it is saved, by asking a model |
-| `ada83.formatStrength` | How much a reformat may change: `indentation`, `layout` or `style` |
-| `ada83.trace.server` | Write the protocol traffic to the output channel |
+| `turboada.compilerPath` | Location of `ta` and where `${workspaceFolder}` gets substituted |
+| `turboada.includePaths` | Directories for with-ed units |
+| `turboada.language` | Language error messages are read in |
+| `turboada.formatOnType` | Reindent each line as you type it |
+| `turboada.formatOnSave` | Reformat the whole file as it is saved, by asking a model |
+| `turboada.formatStrength` | How much a reformat may change: `indentation`, `layout` or `style` |
+| `turboada.trace.server` | Write the protocol traffic to the output channel |
 
 ## Use
 
 The compiler emits LLVM IR, so the IR can be taken directly:
 
 ```sh
-./ada83 --ir hello.ada -o hello.ll      # Textual LLVM IR
-./ada83 --emit-llvm hello.ada -o hello  # Native, keeping the optimised IR
-./ada83 --ir a.ada b.ada c.ada          # Several units, one process each
-./ada83 hello.ll world.ll -o hello      # Link .ll modules, no source needed
+./ta --ir hello.ada -o hello.ll      # Textual LLVM IR
+./ta --emit-llvm hello.ada -o hello  # Native, keeping the optimised IR
+./ta --ir a.ada b.ada c.ada          # Several units, one process each
+./ta hello.ll world.ll -o hello      # Link .ll modules, no source needed
 lli hello.ll                            # Interpret the IR
 ```
 
@@ -201,12 +204,12 @@ targets gdb's Ada mode instead; either defaults the build to `-O0` unless
 an explicit `-O` is given.
 
 ```sh
-./ada83 -g hello.ada -o hello     # Debug info for lldb, lldb-dap, any LLVM tool
-./ada83 -ggdb hello.ada -o hello  # Debug info for gdb's Ada mode
-./ada83 --debug hello             # Debug in the terminal: ada83 drives lldb-dap
+./ta -g hello.ada -o hello     # Debug info for lldb, lldb-dap, any LLVM tool
+./ta -ggdb hello.ada -o hello  # Debug info for gdb's Ada mode
+./ta --debug hello             # Debug in the terminal: ta drives lldb-dap
 ```
 
-In the editor, `F5` runs `ada83 --dap` — the compiler is its own Debug
+In the editor, `F5` runs `ta --dap` — the compiler is its own Debug
 Adapter Protocol server, lldb-dap underneath — for breakpoints, stepping,
 variables and Ada-spelled expressions; names are translated on the way
 through, and a Tasks view lists the program's Ada tasks while it is
@@ -218,16 +221,16 @@ terminal.
 ### In the terminal
 
 ```
-$ ./ada83 --debug demo
-(ada83) break demo.stack.push
+$ ./ta --debug demo
+(ta) break demo.stack.push
 Breakpoint 1 at demo.ada:23
-(ada83) run
+(ta) run
 Stopped at demo.stack.push, demo.ada:23
    23            Total := Total + F.Depth;
-(ada83) bt
+(ta) bt
 #0  demo.stack.push  demo.ada:23
 #1  demo             demo.ada:47
-(ada83) print F.Label
+(ta) print F.Label
 "climb"
 ```
 
@@ -278,8 +281,8 @@ bash test.sh help
 
 ## Release Workflow
 
-1. Update `ada83.c` with `ADA83_VERSION_MINOR` or `ADA83_VERSION_MAJOR` through a normal PR and merge to main.
+1. Update `turboada.c` with `TURBOADA_VERSION_MINOR` or `TURBOADA_VERSION_MAJOR` through a normal PR and merge to main.
 2. Update git with `git tag v1.0 && git push origin v1.0`
 3. Allow `release.yml` to verify the tag, build and packages all platforms and publishes.
 
-The tag gate refuses to publish unless the tag matches `ADA83_VERSION_*` and no release exists under that tag. A tag on an unmerged branch, or one that disagrees with `ADA83_VERSION_*`, publishes nothing.
+The tag gate refuses to publish unless the tag matches `TURBOADA_VERSION_*` and no release exists under that tag. A tag on an unmerged branch, or one that disagrees with `TURBOADA_VERSION_*`, publishes nothing.

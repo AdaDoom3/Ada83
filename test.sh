@@ -199,19 +199,19 @@ elapsed(){
     printf '%d.%03d' $((ms / 1000)) $((ms % 1000))
 }
 
-find_ada83(){
+find_compiler(){
     local candidate
     for candidate in ${ADA83:+"$ADA83"} \
-                     "bin-$HOST_TARGET/ada83" "bin-$HOST_TARGET/ada83.exe" \
-                     ./ada83 ./ada83.exe; do
+                     "bin-$HOST_TARGET/ta" "bin-$HOST_TARGET/ta.exe" \
+                     ./ta ./ta.exe; do
         [[ -x $candidate ]] && { printf '%s' "$candidate"; return 0; }
     done
     return 1
 }
 
-build_ada83(){
+build_compiler(){
     if command -v make >/dev/null; then
-        timed "$BUILD_TIMEOUT" make -s ada83
+        timed "$BUILD_TIMEOUT" make -s ta
     elif [[ $HOST_TARGET == windows ]] && command -v cmd.exe >/dev/null; then
         timed "$BUILD_TIMEOUT" cmd.exe //c make.bat
     else
@@ -257,16 +257,16 @@ acats_setup(){
             "$suite is missing and tests.zip does not carry it; it is tracked in git -- restore it with: git checkout -- $suite"
     done
 
-    ADA83=$(find_ada83) || ADA83=""
-    if [[ -z $ADA83 ]] || [[ ada83.c -nt $ADA83 ]]; then
-        printf '  %srebuilding ada83%s\n' "$DIM" "$OFF"
-        build_ada83 || die "compiler build failed"
-        ADA83=$(find_ada83) || die "no ada83 executable after building"
+    ADA83=$(find_compiler) || ADA83=""
+    if [[ -z $ADA83 ]] || [[ turboada.c -nt $ADA83 ]]; then
+        printf '  %srebuilding ta%s\n' "$DIM" "$OFF"
+        build_compiler || die "compiler build failed"
+        ADA83=$(find_compiler) || die "no ta executable after building"
     fi
     [[ $ADA83 == /* || $ADA83 == ?:[/\\]* ]] || ADA83=$PWD/${ADA83#./}
     export ADA83
 
-    export REPORT_LL="${TMPDIR:-/tmp}/ada83-report-$$.ll"
+    export REPORT_LL="${TMPDIR:-/tmp}/turboada-report-$$.ll"
     timed "$COMPILE_TIMEOUT" "$ADA83" -ada83 --ir acats/report.adb -o "$REPORT_LL" >/dev/null 2>&1 || \
         die "cannot compile acats/report.adb"
 
@@ -787,7 +787,7 @@ run_selector(){
     version=${version%%$'\n'*}
 
     heading "$title"
-    printf '  %sada83%s    %s\n' "$BOLD" "$OFF" "$version"
+    printf '  %sta%s    %s\n' "$BOLD" "$OFF" "$version"
     printf '  %stests%s    %s, over %s workers\n' "$BOLD" "$OFF" "$total" "$NPROC"
     printf '  %sresults%s  %s\n' "$BOLD" "$OFF" "$RESULTS_DIR"
     printf '  %slogs%s     %s\n' "$BOLD" "$OFF" "$LOGS_DIR"
@@ -840,7 +840,7 @@ run_extension_tests(){
     [[ -d extensions ]] || { printf '  %sno extensions/ directory%s\n' "$DIM" "$OFF"; return 0; }
 
     local nm_tool; nm_tool=$(command -v nm || command -v llvm-nm || true)
-    local work; work=$(mktemp -d "${TMPDIR:-/tmp}/ada83-ext.XXXXXX")
+    local work; work=$(mktemp -d "${TMPDIR:-/tmp}/turboada-ext.XXXXXX")
 
     local -A is_support=()
     local source linked
@@ -1051,6 +1051,35 @@ run_repro_tests(){
 
     [[ -n ${RESULTS_DIR:-} && -f $RESULTS_DIR/test_summary.txt ]] &&
         printf ' RP=%d/%d RPF=%d\n' "$REPRO_PASS" "$repro_total" "$REPRO_FAIL" \
+            >> "$RESULTS_DIR/test_summary.txt"
+    return 0
+}
+
+# The fuzz corpus: the feature-matrix swarm's generated A/B/C tests under
+# fuzz/, one directory per cell.  Written against the Reference Manual and
+# not the compiler, so fuzz/KNOWN lists every test that fails today with
+# the verdict it drew; a new verdict, or a listed test that now passes,
+# fails the suite (see fuzz/run.sh).
+run_fuzz_tests(){
+    FUZZ_PASS=0 FUZZ_FAIL=0 FUZZ_KNOWN=0
+    [[ -f fuzz/run.sh ]] || { printf '  %sno fuzz/run.sh%s\n' "$DIM" "$OFF"; return 0; }
+
+    heading "FUZZ" "the feature-matrix corpus: every feature alone and crossed with every other, judged by class, failures held to fuzz/KNOWN"
+
+    local line tail_line
+    line=$(bash fuzz/run.sh "$ADA83" 2>&1) || true
+    printf '%s\n' "$line" | sed -n '/^FAILED/s/^/  /p'
+    tail_line=$(printf '%s\n' "$line" | tail -1)
+    FUZZ_PASS=$(sed -n 's/.*[^0-9]\([0-9]\+\) passed.*/\1/p' <<<"$tail_line"); FUZZ_PASS=${FUZZ_PASS:-0}
+    FUZZ_FAIL=$(sed -n 's/.*[^0-9]\([0-9]\+\) failed.*/\1/p' <<<"$tail_line"); FUZZ_FAIL=${FUZZ_FAIL:-0}
+    FUZZ_KNOWN=$(sed -n 's/.*[^0-9]\([0-9]\+\) known.*/\1/p' <<<"$tail_line"); FUZZ_KNOWN=${FUZZ_KNOWN:-0}
+
+    local fuzz_total=$((FUZZ_PASS + FUZZ_FAIL + FUZZ_KNOWN))
+    printf '\n  %s%s%s\n' "$BOLD" "$tail_line" "$OFF"
+    rate_bar FUZZ "$FUZZ_PASS" "$((fuzz_total > 0 ? fuzz_total : 1))"
+
+    [[ -n ${RESULTS_DIR:-} && -f $RESULTS_DIR/test_summary.txt ]] &&
+        printf ' FZ=%d/%d FZF=%d FZK=%d\n' "$FUZZ_PASS" "$fuzz_total" "$FUZZ_FAIL" "$FUZZ_KNOWN" \
             >> "$RESULTS_DIR/test_summary.txt"
     return 0
 }
@@ -1812,8 +1841,8 @@ run_stages(){
     printf '  %-11s %11s %11s %11s %9s\n' program "front end" whole "back end" "front %"; rule
     for p in "${PROGRAM_LIST[@]}"; do
         progress $((n++)) "$total" "staging $p"
-        f=$(med "$(measure "$BENCH_ADA83" --ir "$BENCH_WORK/src/$p.ada" -o "$BENCH_WORK/$p.ll")")
-        w=$(med "$(measure "$BENCH_ADA83" "-O$OPT" "$BENCH_WORK/src/$p.ada" -o "$BENCH_WORK/$p.exe")")
+        f=$(med "$(measure "$BENCH_TA" --ir "$BENCH_WORK/src/$p.ada" -o "$BENCH_WORK/$p.ll")")
+        w=$(med "$(measure "$BENCH_TA" "-O$OPT" "$BENCH_WORK/src/$p.ada" -o "$BENCH_WORK/$p.exe")")
         clear_line
         awk -v p="$p" -v f="$f" -v w="$w" 'BEGIN{ b=w-f
             printf "  %-11s %11s %11s %11.3f %8.0f%%\n", p, f, w, (b>0?b:0), (w>0?f*100/w:0) }'
@@ -1829,7 +1858,7 @@ run_parser(){
         progress "$n" 800 "generating and compiling ${n} units"
         monster "$n" > "$BENCH_WORK/src/monster.ada"
         lines=$(wc -l < "$BENCH_WORK/src/monster.ada")
-        t=$(med "$(measure "$BENCH_ADA83" --ir "$BENCH_WORK/src/monster.ada" -o "$BENCH_WORK/monster.ll")")
+        t=$(med "$(measure "$BENCH_TA" --ir "$BENCH_WORK/src/monster.ada" -o "$BENCH_WORK/monster.ll")")
         clear_line
         [ -z "$first" ] && { first=$t; firstlines=$lines; }
         awk -v n="$n" -v l="$lines" -v t="$t" -v f="$first" -v fl="$firstlines" 'BEGIN{
@@ -1851,7 +1880,7 @@ run_corpus(){
     lines=$(cat "${CORPUS_FILES[@]}" 2>/dev/null | wc -l); : > "$BENCH_WORK/times"
     TIMEFORMAT=%R
     secs=$( { time { for f in "${CORPUS_FILES[@]}"; do
-            one=$( { time "$BENCH_ADA83" --ir "$f" -o "$BENCH_WORK/c.ll" >/dev/null 2>&1; } 2>&1 )
+            one=$( { time "$BENCH_TA" --ir "$f" -o "$BENCH_WORK/c.ll" >/dev/null 2>&1; } 2>&1 )
             printf '%s\t%s\n' "$one" "$(basename "$f")" >> "$BENCH_WORK/times"
             finished=$((finished+1)); [ $((finished % 10)) = 0 ] && progress "$finished" "$n" "compiling the suite"
          done ; } ; } 2>&1 | tail -1 )
@@ -1870,14 +1899,14 @@ run_corpus(){
 
 run_compare(){
     local other=$1 p a b sa sb n=0 total=${#PROGRAM_LIST[@]} f ref new
-    [ -n "$other" ] || die "compare needs the path of another ada83 binary"
+    [ -n "$other" ] || die "compare needs the path of another ta binary"
     [ -x "$other" ] || die "cannot run $other"
     heading "AGAINST $(basename "$other")"
     printf '  %-11s %14s %14s %10s   %s\n' program reference "this build" delta ''; rule
     for p in "${PROGRAM_LIST[@]}"; do
         progress $((n++)) "$total" "compiling $p"
         sb=$(measure "$other" "-O$OPT" "$BENCH_WORK/src/$p.ada" -o "$BENCH_WORK/$p.ref")
-        sa=$(measure "$BENCH_ADA83" "-O$OPT" "$BENCH_WORK/src/$p.ada" -o "$BENCH_WORK/$p.new")
+        sa=$(measure "$BENCH_TA" "-O$OPT" "$BENCH_WORK/src/$p.ada" -o "$BENCH_WORK/$p.new")
         b=$(med "$sb"); a=$(med "$sa"); clear_line
         printf '  %-11s %8s%s %8s%s %s   %s\n' "$p" \
             "$b" "$(spread "$(rsd "$sb")")" "$a" "$(spread "$(rsd "$sa")")" \
@@ -1889,7 +1918,7 @@ run_compare(){
     progress 1 2 "reference over the corpus"
     ref=$( { time { for f in "${CORPUS_FILES[@]}"; do "$other" --ir "$f" -o "$BENCH_WORK/c.ll" >/dev/null 2>&1; done ; } ; } 2>&1 | tail -1 )
     progress 2 2 "this build over the corpus"
-    new=$( { time { for f in "${CORPUS_FILES[@]}"; do "$BENCH_ADA83" --ir "$f" -o "$BENCH_WORK/c.ll" >/dev/null 2>&1; done ; } ; } 2>&1 | tail -1 )
+    new=$( { time { for f in "${CORPUS_FILES[@]}"; do "$BENCH_TA" --ir "$f" -o "$BENCH_WORK/c.ll" >/dev/null 2>&1; done ; } ; } 2>&1 | tail -1 )
     clear_line; rule
     printf '  %-11s %14s %14s %s\n' corpus "$ref" "$new" "$(change "$new" "$ref")"
 }
@@ -1900,7 +1929,7 @@ run_profile(){
     local sweep=$BENCH_WORK/sweep.sh
     cat > "$sweep" <<EOF
 #!/bin/sh
-for f do "$BENCH_ADA83" --ir "\$f" -o "$BENCH_WORK/c.ll" >/dev/null 2>&1; done
+for f do "$BENCH_TA" --ir "\$f" -o "$BENCH_WORK/c.ll" >/dev/null 2>&1; done
 EOF
     chmod +x "$sweep"
     if command -v perf >/dev/null 2>&1 && perf stat true >/dev/null 2>&1; then
@@ -1912,14 +1941,14 @@ EOF
         return
     fi
     pulse "building an instrumented compiler"
-    gcc -O2 -pg -w -std=gnu2x -o "$BENCH_WORK/ada83-pg" "$HERE/ada83.c" -lpthread >/dev/null 2>&1
+    gcc -O2 -pg -w -std=gnu2x -o "$BENCH_WORK/ta-pg" "$HERE/turboada.c" -lpthread >/dev/null 2>&1
     pulse_stop
-    [ -x "$BENCH_WORK/ada83-pg" ] || { echo "  perf is absent and the instrumented build failed"; return; }
+    [ -x "$BENCH_WORK/ta-pg" ] || { echo "  perf is absent and the instrumented build failed"; return; }
     pulse "profiling"
-    ( cd "$BENCH_WORK" && for f in "${CORPUS_FILES[@]}"; do "$BENCH_WORK/ada83-pg" --ir "$f" -o "$BENCH_WORK/c.ll" >/dev/null 2>&1; done )
+    ( cd "$BENCH_WORK" && for f in "${CORPUS_FILES[@]}"; do "$BENCH_WORK/ta-pg" --ir "$f" -o "$BENCH_WORK/c.ll" >/dev/null 2>&1; done )
     pulse_stop
     if [ -f "$BENCH_WORK/gmon.out" ] && command -v gprof >/dev/null 2>&1; then
-        ( cd "$BENCH_WORK" && gprof -b -p "$BENCH_WORK/ada83-pg" gmon.out 2>/dev/null | head -22 | sed 's/^/  /' )
+        ( cd "$BENCH_WORK" && gprof -b -p "$BENCH_WORK/ta-pg" gmon.out 2>/dev/null | head -22 | sed 's/^/  /' )
     else echo "  no profile was produced"; fi
 }
 
@@ -1929,18 +1958,18 @@ run_codegen(){
     local -a DIALECT
     LOAD_PEAK=0
     if [ -n "$TSV_DIR" ]; then mkdir -p "$TSV_DIR"; tsv=$TSV_DIR/suite$suite.tsv
-        printf 'program\tada83_med\tada83_mad\tgnat_med\tgnat_mad\tdistinguishable\tratio\toutput\tsamples\tcpus\tload_peak\n' > "$tsv"
+        printf 'program\tta_med\tta_mad\tgnat_med\tgnat_mad\tdistinguishable\tratio\toutput\tsamples\tcpus\tload_peak\n' > "$tsv"
     fi
     if [ "$SUITES" -gt 1 ]
     then heading "GENERATED CODE — suite $suite of $SUITES" "median ± MAD of $CODEGEN_REPEATS interleaved repetitions, $PIN_WHY"
     else heading "GENERATED CODE" "median ± MAD of $CODEGEN_REPEATS interleaved repetitions, $PIN_WHY"; fi
     if [ "$gnat" = 1 ]
-    then printf '  %-11s %15s %15s %7s  %-17s %s\n' program 'ada83 (s)' 'gnat (s)' ratio verdict stresses
-    else printf '  %-11s %15s  %s\n' program 'ada83 (s)' stresses; fi
+    then printf '  %-11s %15s %15s %7s  %-17s %s\n' program 'ta (s)' 'gnat (s)' ratio verdict stresses
+    else printf '  %-11s %15s  %s\n' program 'ta (s)' stresses; fi
     rule
     for p in "${PROGRAM_LIST[@]}"; do
         progress $((n++)) "$total" "$p"
-        if ! "$BENCH_ADA83" "-O$OPT" \
+        if ! "$BENCH_TA" "-O$OPT" \
                "$BENCH_WORK/src/$p.ada" -o "$BENCH_WORK/$p.a83" >/dev/null 2>&1; then
             clear_line; printf '  %-11s %14s\n' "$p" "build failed"
             eval "T_$p=x G_$p=x R_${suite}_$p=- D_${suite}_$p=0"; continue
@@ -2007,7 +2036,7 @@ run_codegen(){
         eval "a=\${T_$p:-x}"; eval "g=\${G_$p:-x}"; eval "n=\${D_${suite}_$p:-0}"
         [ "$a" = x ] && continue
         outcome=$(speedup "$a" "$g"); [ "$n" = 1 ] || outcome='indistinguishable'
-        printf '  %-11s %s%-5s%s %s %7s  %s\n' "$p" "$BOLD" ada83 "$OFF" \
+        printf '  %-11s %s%-5s%s %s %7s  %s\n' "$p" "$BOLD" ta "$OFF" \
             "$(bar "$(scaled "$a" "$peak" 30)" 30)" "$a" "$outcome"
         [ "$g" = x ] && continue
         printf '  %-11s %s%-5s%s %s %7s\n' '' "$DIM" gnat "$OFF" \
@@ -2052,7 +2081,7 @@ run_memory(){
     printf '  %-11s %14s %14s  %s\n' program "compiling it" "running it" stresses; rule
     for p in "${PROGRAM_LIST[@]}"; do
         progress $((n++)) "$total" "$p"
-        c=$(peak_rss "$BENCH_ADA83" "-O$OPT" "$BENCH_WORK/src/$p.ada" -o "$BENCH_WORK/$p.mem")
+        c=$(peak_rss "$BENCH_TA" "-O$OPT" "$BENCH_WORK/src/$p.ada" -o "$BENCH_WORK/$p.mem")
         r=x; [ -x "$BENCH_WORK/$p.mem" ] && r=$(peak_rss "$BENCH_WORK/$p.mem")
         clear_line
         printf '  %-11s %14s %14s  %s\n' "$p" "${c:-x}" "${r:-x}" "$(describe "$p")"
@@ -2073,7 +2102,7 @@ build_flags(){
 
 bench_header(){
     local mode=$1 gnat=$2
-    printf '\n  %sada83%s   %s\n' "$BOLD" "$OFF" "$("$BENCH_ADA83" --version 2>&1 | head -1)"
+    printf '\n  %sta%s   %s\n' "$BOLD" "$OFF" "$("$BENCH_TA" --version 2>&1 | head -1)"
     printf '  %sbuilt%s   %s\n' "$BOLD" "$OFF" "$(build_flags)"
     if [ "$gnat" = 1 ]; then
         printf '  %sgnat%s    %s (%s)\n' "$BOLD" "$OFF" "$(gnatmake --version 2>&1 | head -1)" \
@@ -2111,19 +2140,19 @@ bench_main(){
     SUITES=${SUITES:-2} RT=${RT:-0} FLOOR=${FLOOR:-0.002}
     LOAD_MAX=${LOAD_MAX:-2.0} FORCE=${FORCE:-0} NO_PIN=${NO_PIN:-0} TSV_DIR=${TSV_DIR:-}
 
-    BENCH_ADA83=${ADA83:-$HERE/bin-$HOST_TARGET/ada83}
-    [ -x "$BENCH_ADA83" ] || [ ! -x "$BENCH_ADA83.exe" ] || BENCH_ADA83=$BENCH_ADA83.exe
-    [ -x "$BENCH_ADA83" ] || [ ! -x "$HERE/ada83" ] || BENCH_ADA83=$HERE/ada83
+    BENCH_TA=${ADA83:-$HERE/bin-$HOST_TARGET/ta}
+    [ -x "$BENCH_TA" ] || [ ! -x "$BENCH_TA.exe" ] || BENCH_TA=$BENCH_TA.exe
+    [ -x "$BENCH_TA" ] || [ ! -x "$HERE/ta" ] || BENCH_TA=$HERE/ta
 
-    BENCH_WORK=$(mktemp -d "${TMPDIR:-/tmp}/ada83-bench-XXXXXX")
+    BENCH_WORK=$(mktemp -d "${TMPDIR:-/tmp}/turboada-bench-XXXXXX")
     seed=$BENCH_WORK/seed
     LOAD_SAMPLES=$BENCH_WORK/load.samples
     PROGRAM_LIST=(); read -r -a PROGRAM_LIST <<<"${ONLY:-$ALL_PROGRAMS}"
 
     bench_pinning
     hide_cursor
-    [ -x "$BENCH_ADA83" ] || { pulse "building the compiler"; make -C "$HERE" -s ada83 >/dev/null 2>&1; pulse_stop; }
-    [ -x "$BENCH_ADA83" ] || die "cannot build $BENCH_ADA83"
+    [ -x "$BENCH_TA" ] || { pulse "building the compiler"; make -C "$HERE" -s ta >/dev/null 2>&1; pulse_stop; }
+    [ -x "$BENCH_TA" ] || die "cannot build $BENCH_TA"
     write_programs
 
     case $mode in codegen|all) have_gnat && gnat=1 ;; esac
@@ -2147,10 +2176,10 @@ bench_main(){
 usage(){ cat <<TEXT
 Usage: $SELF [COMMAND] [ARGUMENT]
 
-Test and measure the ada83 compiler: the ACATS conformance suite, the
+Test and measure the TurboAda compiler: the ACATS conformance suite, the
 extension tests, the project-file tests, the acats-bonus and debugging
-suites, the reproducers, and the benchmarks.  With no arguments, runs
-every test.
+suites, the reproducers, the fuzz corpus, and the benchmarks.  With no
+arguments, runs every test.
 
 Commands:
   run [SELECTOR]     run the suite and print a report (the default)
@@ -2170,6 +2199,9 @@ Commands:
   repro              run only the reproducers: the program each fix was landed
                      with, under repro/, run in isolation and judged by the
                      expectation lines in its header (see repro/run.sh)
+  fuzz               run only the fuzz corpus: the feature-matrix swarm's
+                     generated A/B/C tests under fuzz/, each failure held to
+                     the verdict fuzz/KNOWN records for it (see fuzz/run.sh)
   bench [MODE]       measure rather than test; see Benchmark modes below
   help               display this help and exit
 
@@ -2188,17 +2220,17 @@ Benchmark modes, reached as \`$SELF bench MODE' or \`bash test-bench.sh MODE':
   parser              front end against input size, to expose non-linear cost
   corpus              throughput over the conformance suite, slowest inputs named
   compare REFERENCE   this compiler against another build of it, with deltas
-  profile             the functions in ada83.c that compiling spends time in
+  profile             the functions in turboada.c that compiling spends time in
   codegen             run time of the generated code, against GNAT where present
   memory              peak memory of the compiler and of what it produces
   all                 every mode but compare and profile (the default)
 
 To compare two builds, keep the old binary and name it:
 
-  cp bin-*/ada83 /tmp/before && make && ./$SELF bench compare /tmp/before
+  cp bin-*/ta /tmp/before && make && ./$SELF bench compare /tmp/before
 
 Environment:
-  ADA83              compiler to test (default: bin-<platform>/ada83, built
+  ADA83              compiler to test (default: bin-<platform>/ta, built
                      with make if it is missing)
   OPT                the flag the tests link with (default: -O2); under bench,
                      the level alone (default: 2)
@@ -2259,12 +2291,13 @@ main(){
                      run_bonus_tests
                      run_debug_tests
                      run_repro_tests
+                     run_fuzz_tests
                  fi ;;
         q)       run_selector "${1:-c32}" "ACATS RUN — ${1:-c32}" ;;
         check)   run_selector "${1:-all}" "ACATS CHECK — ${1:-all}"
-                 [[ ${1:-all} == all ]] && { run_extension_tests; run_project_tests; run_bonus_tests; run_debug_tests; run_repro_tests; }
+                 [[ ${1:-all} == all ]] && { run_extension_tests; run_project_tests; run_bonus_tests; run_debug_tests; run_repro_tests; run_fuzz_tests; }
                  compare_to_baseline
-                 ((REGRESSIONS==0 && ${EXT_FAIL:-0}==0 && ${PROJ_FAIL:-0}==0 && ${DBG_FAIL:-0}==0 && ${REPRO_FAIL:-0}==0)) || exit 1 ;;
+                 ((REGRESSIONS==0 && ${EXT_FAIL:-0}==0 && ${PROJ_FAIL:-0}==0 && ${DBG_FAIL:-0}==0 && ${REPRO_FAIL:-0}==0 && ${FUZZ_FAIL:-0}==0)) || exit 1 ;;
         extensions|x)
                  run_extension_tests
                  ((${EXT_FAIL:-0}==0)) || exit 1 ;;
@@ -2280,6 +2313,9 @@ main(){
         repro|rp)
                  run_repro_tests
                  ((${REPRO_FAIL:-0}==0)) || exit 1 ;;
+        fuzz|fz)
+                 run_fuzz_tests
+                 ((${FUZZ_FAIL:-0}==0)) || exit 1 ;;
         bless)   run_selector "${1:-all}" "ACATS BLESS — ${1:-all}"
                  write_baseline ;;
         list)    local -a SELECTED=(); selector_files "${1:-all}"
